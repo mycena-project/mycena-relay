@@ -45,7 +45,7 @@ Mycelium App ──► relay circuit (/p2p-circuit) ──► Mycelium App
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: **security@[domain]** — [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: **security@example.invalid** — [SECURITY.md](SECURITY.md).
 
 ## License
 

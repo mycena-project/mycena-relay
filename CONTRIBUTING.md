@@ -8,7 +8,7 @@ Early public beta — coordinate with the main [Mycelium](https://github.com/myc
 |------|---------|
 | **Bug** | GitHub Issue with repro steps |
 | **Feature** | GitHub Issue with use case |
-| **Security** | **security@[domain]** only — see [SECURITY.md](SECURITY.md) |
+| **Security** | **security@example.invalid** only — see [SECURITY.md](SECURITY.md) |
 
 ## Development
 

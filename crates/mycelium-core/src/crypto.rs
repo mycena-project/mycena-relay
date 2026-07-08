@@ -24,7 +24,7 @@ pub struct EncryptionKeypair {
 
 impl EncryptionKeypair {
     pub fn generate() -> Self {
-        let secret = StaticSecret::random_from_rng(OsRng);
+        let secret = StaticSecret::random();
         let secret_raw = secret.to_bytes();
         let public = PublicKey::from(&secret);
         Self {
@@ -80,7 +80,7 @@ pub fn parse_x25519_public_hex(s: &str) -> anyhow::Result<PublicKey> {
 
 /// Output: `[ephemeral_pubkey 32]` + `[nonce 12]` + `[ciphertext]`
 pub fn encrypt_for(plaintext: &[u8], recipient_public: &PublicKey) -> anyhow::Result<Vec<u8>> {
-    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_secret = EphemeralSecret::random();
     let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
     let shared = ephemeral_secret.diffie_hellman(recipient_public);

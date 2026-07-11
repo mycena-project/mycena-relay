@@ -27,6 +27,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mycelium-relay-${{ matrix.os }}
       - name: Install Linux dependencies (Tauri / WebKit)
         if: runner.os == 'Linux'
         run: |

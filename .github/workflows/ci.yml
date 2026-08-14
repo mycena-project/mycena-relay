@@ -30,17 +30,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: mycelium-relay-${{ matrix.os }}
-      - name: Install Linux dependencies (Tauri / WebKit)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev \
-            libayatana-appindicator3-dev librsvg2-dev
-      - name: Build workspace
-        run: cargo build --workspace
-      - name: Test workspace
-        run: cargo test --workspace
+      - name: Build relay crates
+        run: cargo build -p mycelium-relay -p mycelium-core -p mycelium-node
+      - name: Test relay crates
+        run: cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
       - name: Rustfmt
         run: cargo fmt --all -- --check

@@ -28,7 +28,7 @@ fn signed_encrypted_direct_roundtrip() {
     let sender_kp = identity::Keypair::generate_ed25519();
     let sender_id = sender_kp.public().to_peer_id();
     let author = sender_id.to_string();
-    let inner = e2e_direct_wrap::wrap_inner(&author, b"payload");
+    let inner = e2e_direct_wrap::wrap_inner(&author, b"payload").unwrap();
     let encrypted = encrypt_for(&inner, &recipient.public).unwrap();
 
     let mut wire = WireMessage::EncryptedDirect {

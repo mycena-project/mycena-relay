@@ -51,12 +51,16 @@ impl SecretVault {
             match vault.read_secret(name) {
                 Ok(Some(_)) => {}
                 Ok(None) => {}
+                Err(e) if name == "ed25519_identity" => {
+                    return Err(anyhow::anyhow!(
+                        "unreadable identity at {path:?}: {e}; refusing to delete or mint a new Peer ID"
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!(
-                        "dropping unreadable at-rest secret {name} at {:?}: {e}",
+                        "unreadable at-rest secret {name} at {:?}: {e} (leaving file in place)",
                         path
                     );
-                    let _ = vault.delete_secret(name);
                 }
             }
         }

@@ -26,7 +26,6 @@ libp2p = { version = "0.56", features = [
   "kad",
 ] }
 mycelium-core = { path = "../mycelium-core" }
-mycelium-node = { path = "../mycelium-node" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true

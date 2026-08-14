@@ -544,8 +544,8 @@ impl NodeRunner {
         let mut gc_tick = interval(Duration::from_secs(6 * 60 * 60));
         gc_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let (rendezvous_tx, mut rendezvous_rx) = mpsc::channel::<Vec<String>>(8);
-        let rendezvous_local = self.local_peer_id.clone();
         let rendezvous_flag = self.rendezvous_enabled.clone();
+        let rendezvous_kp = self.keypair.clone();
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(45));
             tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -554,11 +554,11 @@ impl NodeRunner {
                 if !rendezvous_flag.load(Ordering::Relaxed) {
                     continue;
                 }
-                let local = rendezvous_local.clone();
+                let Some(kp) = rendezvous_kp.clone() else {
+                    continue;
+                };
                 let remote_ids = tokio::task::spawn_blocking(move || {
-                    mycelium_core::rendezvous::set_relay_rendezvous_registration(
-                        &local, true, None,
-                    );
+                    mycelium_core::rendezvous::set_relay_rendezvous_registration(&kp, true, None);
                     mycelium_core::rendezvous::fetch_relay_rendezvous(None)
                 })
                 .await
@@ -608,16 +608,14 @@ impl NodeRunner {
             return;
         }
         let relay_id = mycelium_core::bootstrap::RELAY_PEER_ID;
-        let known: HashSet<String> = self
-            .peers
-            .read()
-            .await
-            .iter()
-            .cloned()
-            .chain(self.transport.known_peers())
-            .collect();
         for remote in remote_ids {
-            if remote == self.local_peer_id || remote == relay_id || known.contains(&remote) {
+            if remote == self.local_peer_id || remote == relay_id {
+                continue;
+            }
+            if self.peers.read().await.iter().any(|p| p == &remote) {
+                continue;
+            }
+            if self.transport.known_peers().iter().any(|p| p == &remote) {
                 continue;
             }
             let Some(addr) = mycelium_core::bootstrap::relay_circuit_multiaddr(&remote) else {
@@ -753,12 +751,13 @@ impl NodeRunner {
             }
             NodeCommand::SetRendezvousEnabled(enabled) => {
                 self.rendezvous_enabled.store(enabled, Ordering::Relaxed);
-                let local = self.local_peer_id.clone();
-                tokio::task::spawn_blocking(move || {
-                    mycelium_core::rendezvous::set_relay_rendezvous_registration(
-                        &local, enabled, None,
-                    );
-                });
+                if let Some(kp) = self.keypair.clone() {
+                    tokio::task::spawn_blocking(move || {
+                        mycelium_core::rendezvous::set_relay_rendezvous_registration(
+                            &kp, enabled, None,
+                        );
+                    });
+                }
                 info!(
                     "rendezvous discovery {}",
                     if enabled { "enabled" } else { "disabled" }
@@ -779,9 +778,10 @@ impl NodeRunner {
             Some(to_peer.clone()),
             payload,
         );
-        if let Some(keypair) = &self.keypair {
-            let _ = envelope.sign(keypair);
-        }
+        let Some(keypair) = &self.keypair else {
+            anyhow::bail!("no identity keypair to sign outbound message");
+        };
+        envelope.sign(keypair)?;
         let msg = DirectMessage {
             envelope,
             body: body.clone(),
@@ -844,9 +844,10 @@ impl NodeRunner {
                 None,
                 payload.clone(),
             );
-            if let Some(keypair) = &self.keypair {
-                let _ = envelope.sign(keypair);
-            }
+            let Some(keypair) = &self.keypair else {
+                anyhow::bail!("no identity keypair to sign outbound message");
+            };
+            envelope.sign(keypair)?;
             let msg = DirectMessage {
                 envelope,
                 body: body.clone(),
@@ -916,8 +917,11 @@ impl NodeRunner {
                 payload,
             } => {
                 let scope_obj = Scope(scope.clone());
-                let scopes = self.subscribed_scopes.read().await;
-                if !scopes.iter().any(|pattern| scope_obj.matches(pattern)) {
+                let subscribed = {
+                    let scopes = self.subscribed_scopes.read().await;
+                    scopes.iter().any(|pattern| scope_obj.matches(pattern))
+                };
+                if !subscribed {
                     return Ok(());
                 }
                 let now = now_ms();
@@ -933,153 +937,74 @@ impl NodeRunner {
                         .map(|wm| matches!(wm, WireMessage::EncryptedGroup { .. }))
                         .unwrap_or(false)
                 {
-                    let envelope = mycelium_core::data::Envelope::new_unsigned(
-                        from_peer.clone(),
-                        None,
-                        payload,
-                    );
-                    if let Err(reason) = self.ingest_guard.check_gossip_message(
-                        &from_peer,
-                        &envelope.id.0,
-                        envelope.created_at_ms,
-                        now,
-                    ) {
-                        self.record_ingest_reject(reason);
-                        return Ok(());
-                    }
-                    let stored = DirectMessage {
-                        envelope,
-                        body: "[mycelium:group]".into(),
-                    };
-                    let should_process = self
-                        .ingest
-                        .ingest(&mut self.seen_cache, &stored, false)
+                    self.ingest_unsigned_gossip(from_peer, payload, "[mycelium:group]".into(), now)
                         .await?;
-                    if should_process {
-                        let _ = self.incoming_tx.send(stored);
-                    }
                     return Ok(());
                 }
-                // App store listings are bincode payloads; they may decode as UTF-8 by chance.
-                // Always route this scope through the app pipeline with a stable body tag.
                 if scope == "mycelium/appstore/v1" {
-                    let envelope = mycelium_core::data::Envelope::new_unsigned(
-                        from_peer.clone(),
-                        None,
-                        payload,
-                    );
-                    if let Err(reason) = self.ingest_guard.check_gossip_message(
-                        &from_peer,
-                        &envelope.id.0,
-                        envelope.created_at_ms,
-                        now,
-                    ) {
-                        self.record_ingest_reject(reason);
-                        return Ok(());
-                    }
-                    let stored = DirectMessage {
-                        envelope,
-                        body: "[appstore]".into(),
-                    };
-                    let should_process = self
-                        .ingest
-                        .ingest(&mut self.seen_cache, &stored, false)
+                    self.ingest_unsigned_gossip(from_peer, payload, "[appstore]".into(), now)
                         .await?;
-                    if should_process {
-                        let _ = self.incoming_tx.send(stored);
-                    }
                     return Ok(());
                 }
                 if scope == "mycelium/proximity/v1" {
-                    let envelope = mycelium_core::data::Envelope::new_unsigned(
-                        from_peer.clone(),
-                        None,
-                        payload,
-                    );
-                    if let Err(reason) = self.ingest_guard.check_gossip_message(
-                        &from_peer,
-                        &envelope.id.0,
-                        envelope.created_at_ms,
-                        now,
-                    ) {
-                        self.record_ingest_reject(reason);
-                        return Ok(());
-                    }
-                    let stored = DirectMessage {
-                        envelope,
-                        body: "[proximity]".into(),
-                    };
-                    let should_process = self
-                        .ingest
-                        .ingest(&mut self.seen_cache, &stored, false)
+                    self.ingest_unsigned_gossip(from_peer, payload, "[proximity]".into(), now)
                         .await?;
-                    if should_process {
-                        let _ = self.incoming_tx.send(stored);
-                    }
                     return Ok(());
                 }
-                let scope_subscribed = scopes.iter().any(|pattern| scope_obj.matches(pattern));
-                if scope_subscribed
-                    && (payload.starts_with(b"enc1:") || std::str::from_utf8(&payload).is_err())
-                {
-                    let envelope = mycelium_core::data::Envelope::new_unsigned(
-                        from_peer.clone(),
-                        None,
+                if payload.starts_with(b"enc1:") || std::str::from_utf8(&payload).is_err() {
+                    self.ingest_unsigned_gossip(
+                        from_peer,
                         payload,
-                    );
-                    if let Err(reason) = self.ingest_guard.check_gossip_message(
-                        &from_peer,
-                        &envelope.id.0,
-                        envelope.created_at_ms,
+                        format!("[bulletin:{scope}]"),
                         now,
-                    ) {
-                        self.record_ingest_reject(reason);
-                        return Ok(());
-                    }
-                    let stored = DirectMessage {
-                        envelope,
-                        body: format!("[bulletin:{scope}]"),
-                    };
-                    let should_process = self
-                        .ingest
-                        .ingest(&mut self.seen_cache, &stored, false)
-                        .await?;
-                    if should_process {
-                        let _ = self.incoming_tx.send(stored);
-                    }
+                    )
+                    .await?;
                     return Ok(());
                 }
                 if let Ok(body) = String::from_utf8(payload.clone()) {
-                    let envelope = mycelium_core::data::Envelope::new_unsigned(
-                        from_peer.clone(),
-                        None,
-                        payload,
-                    );
-                    if let Err(reason) = self.ingest_guard.check_gossip_message(
-                        &from_peer,
-                        &envelope.id.0,
-                        envelope.created_at_ms,
-                        now,
-                    ) {
-                        self.record_ingest_reject(reason);
-                        return Ok(());
-                    }
-                    let stored = DirectMessage {
-                        envelope,
-                        body: body.clone(),
-                    };
-                    let should_process = self
-                        .ingest
-                        .ingest(&mut self.seen_cache, &stored, false)
+                    let ingested = self
+                        .ingest_unsigned_gossip(from_peer.clone(), payload, body.clone(), now)
                         .await?;
-                    if should_process {
+                    if ingested {
                         info!("gossip recv from {} [{}]: {}", from_peer, scope, body);
-                        let _ = self.incoming_tx.send(stored);
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    /// Returns whether the message was newly ingested (for optional logging).
+    async fn ingest_unsigned_gossip(
+        &mut self,
+        from_peer: String,
+        payload: Vec<u8>,
+        body_tag: String,
+        now: u64,
+    ) -> anyhow::Result<bool> {
+        let envelope =
+            mycelium_core::data::Envelope::new_unsigned(from_peer.clone(), None, payload);
+        if let Err(reason) = self.ingest_guard.check_gossip_message(
+            &from_peer,
+            &envelope.id.0,
+            envelope.created_at_ms,
+            now,
+        ) {
+            self.record_ingest_reject(reason);
+            return Ok(false);
+        }
+        let stored = DirectMessage {
+            envelope,
+            body: body_tag,
+        };
+        let should_process = self
+            .ingest
+            .ingest(&mut self.seen_cache, &stored, false)
+            .await?;
+        if should_process {
+            let _ = self.incoming_tx.send(stored);
+        }
+        Ok(should_process)
     }
 
     async fn handle_incoming_direct(

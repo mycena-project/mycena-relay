@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycelium Project
 namespace mycelium {
+  [Throws=MyceliumException]
   void init_node(NodeConfig config);
   void stop_node();
   string local_peer_id();
@@ -24,12 +25,15 @@ namespace mycelium {
   sequence<ContactInfo> list_contacts();
   sequence<ContactInfo> list_accepted_contacts();
   sequence<ContactInfo> list_pending_contacts();
+  [Throws=MyceliumException]
   ContactInfo add_contact(string peer_id, string display_name, boolean accepted);
+  [Throws=MyceliumException]
   ContactInfo accept_contact(string peer_id);
   void reject_contact(string peer_id);
   void remove_contact(string peer_id);
 
   sequence<GroupInfo> list_groups();
+  [Throws=MyceliumException]
   GroupInfo create_group(string name);
   GroupInfo? import_group_invite(string json);
   string export_group_invite(string group_id);
@@ -89,19 +93,27 @@ namespace mycelium {
   MiniAppInfo install_app(bytes bundle_data, string? listing_app_id, boolean allow_sideload, boolean allow_downgrade);
   [Throws=MyceliumException]
   MiniAppInfo install_official_bundle(string app_id);
+  [Throws=MyceliumException]
   void uninstall_app(string app_id);
   bytes? get_app_file(string app_id, string path);
   sequence<AppStoreListing> browse_app_store();
   string? miniapp_storage_get(string app_id, string key);
+  [Throws=MyceliumException]
   void miniapp_storage_set(string app_id, string key, string value);
+  [Throws=MyceliumException]
   void miniapp_storage_delete(string app_id, string key);
   string miniapp_bridge_call(string app_id, string method, string args_json);
   string miniapp_issue_bridge_session(string app_id);
   void miniapp_revoke_bridge_session(string app_id);
+  [Throws=MyceliumException]
   string miniapp_issue_capability(string app_id, string permission, string session_token);
+  [Throws=MyceliumException]
   void miniapp_publish_revocation(string app_id, string reason);
+  [Throws=MyceliumException]
   MiniAppPolicyData miniapp_get_policy(string app_id);
+  [Throws=MyceliumException]
   void miniapp_set_safe_mode(string app_id, boolean enabled);
+  [Throws=MyceliumException]
   void miniapp_report_app(string app_id);
 
   ConnectivityMode current_connectivity_mode();
@@ -336,4 +348,5 @@ callback interface NodeEventCallback {
 interface MyceliumException {
   InstallError(string detail);
   ChatError(string detail);
+  NodeError(string detail);
 };

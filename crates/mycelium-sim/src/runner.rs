@@ -339,8 +339,13 @@ impl SimulationRunner {
         let db_path = sim_db_path(self.sim_run_id, &format!("n{idx}"));
         let _ = std::fs::remove_dir_all(&db_path);
         std::fs::create_dir_all(&db_path)?;
+        // Deterministic per-node key so tests do not depend on OS keyring / leftover fallback files.
+        let mut storage_key = [0u8; 32];
+        storage_key[..8].copy_from_slice(&self.sim_run_id.to_le_bytes());
+        storage_key[8] = idx as u8;
+        let identity_path = format!("{}/identity", db_path.display());
         let keypair =
-            mycelium_node::load_or_create_keypair(&format!("{}/identity", db_path.display()))?;
+            mycelium_node::secrets::load_or_create_keypair(&identity_path, Some(storage_key))?;
         let peer_id = keypair.public().to_peer_id().to_string();
         let transport = self.build_transport(peer_id.clone(), Some(keypair), bandwidth);
         let config = NodeConfig {
@@ -348,13 +353,13 @@ impl SimulationRunner {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("failed to parse listen addr: {e}"))?,
             db_path: db_path.to_string_lossy().to_string(),
-            keypair_path: None,
+            keypair_path: Some(identity_path),
             forwarding_interval_ms: 10,
             sync_interval_secs: 2,
             bootstrap_peers: Vec::new(),
             connectivity_rx: None,
             display_name: None,
-            storage_key: None,
+            storage_key: Some(storage_key),
             max_relay_fanout: 3,
             rendezvous_enabled: true,
             bulletin_subscriptions: Vec::new(),
@@ -371,7 +376,17 @@ impl SimulationRunner {
 }
 
 fn sim_db_path(run_id: u64, peer_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("mycelium-sim-{run_id}-{peer_id}"))
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "mycelium-sim-{}-{}-{}-{}",
+        std::process::id(),
+        run_id,
+        peer_id,
+        nanos
+    ))
 }
 
 fn wire_message_size(message: &WireMessage) -> usize {

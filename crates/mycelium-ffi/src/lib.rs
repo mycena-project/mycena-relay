@@ -33,6 +33,7 @@ use tokio::sync::RwLock;
 pub enum MyceliumException {
     InstallError { detail: String },
     ChatError { detail: String },
+    NodeError { detail: String },
 }
 
 impl std::fmt::Display for MyceliumException {
@@ -40,8 +41,19 @@ impl std::fmt::Display for MyceliumException {
         match self {
             MyceliumException::InstallError { detail } => write!(f, "{detail}"),
             MyceliumException::ChatError { detail } => write!(f, "{detail}"),
+            MyceliumException::NodeError { detail } => write!(f, "{detail}"),
         }
     }
+}
+
+fn node_err(e: impl std::fmt::Display) -> MyceliumException {
+    MyceliumException::NodeError {
+        detail: e.to_string(),
+    }
+}
+
+fn recover_mutex<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl std::error::Error for MyceliumException {}
@@ -374,7 +386,7 @@ impl NotificationSink for FfiNotifier {
     fn on_bulletin_posted(&self, _scope: &str, _title: &str) {}
 
     fn on_contact_request(&self, peer_id: &str, display_name: &str) {
-        if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+        if let Some(cb) = recover_mutex(&CALLBACK).clone() {
             cb.on_contact_request(peer_id.to_string(), display_name.to_string());
         }
     }
@@ -433,8 +445,12 @@ struct NodeState {
     connectivity_mode: Arc<Mutex<NetConnectivityMode>>,
 }
 
-pub fn init_node(config: NodeConfig) {
-    let runtime = RUNTIME.get_or_init(|| Runtime::new().expect("tokio runtime init failed"));
+pub fn init_node(config: NodeConfig) -> Result<(), MyceliumException> {
+    if RUNTIME.get().is_none() {
+        let rt = Runtime::new().map_err(node_err)?;
+        let _ = RUNTIME.set(rt);
+    }
+    let runtime = RUNTIME.get().ok_or_else(|| node_err("runtime missing"))?;
     runtime.block_on(async move {
         #[cfg(target_os = "android")]
         {
@@ -457,13 +473,10 @@ pub fn init_node(config: NodeConfig) {
             .as_deref()
             .map(mycelium_node::parse_storage_key_hex)
             .transpose()
-            .expect("invalid storage_key_hex");
+            .map_err(node_err)?;
 
         let rust_config = RustNodeConfig {
-            listen_addr: config
-                .listen_addr
-                .parse()
-                .expect("invalid listen address for node"),
+            listen_addr: config.listen_addr.parse().map_err(node_err)?,
             db_path: config.db_path.clone(),
             keypair_path: Some(format!("{}/identity", config.db_path)),
             forwarding_interval_ms: 500,
@@ -478,28 +491,25 @@ pub fn init_node(config: NodeConfig) {
             max_peers: 50,
         };
 
-        let (runner, handle) =
-            NodeRunner::new(rust_config).expect("failed to initialize node runner");
+        let (runner, handle) = NodeRunner::new(rust_config).map_err(node_err)?;
         let local_peer_id = runner.local_peer_id().to_string();
         let runner_task = tokio::spawn(async move { runner.run().await });
 
         let app_storage = Arc::new(
             AppStorage::open_with_key(&format!("{}/app", config.db_path), storage_key)
-                .expect("failed to open app storage"),
+                .map_err(node_err)?,
         );
         let app_store = Arc::new(
             mycelium_app::miniapp::AppStore::open(&format!("{}/miniapp", config.db_path))
-                .expect("failed to open miniapp store"),
+                .map_err(node_err)?,
         );
         let coin_identity_path = format!("{}/identity", config.db_path);
         let coin_addr = address_from_keypair(
             &mycelium_node::secrets::load_or_create_keypair(&coin_identity_path, storage_key)
-                .expect("failed to load node identity for coin"),
+                .map_err(node_err)?,
         );
-        let coin_ledger = Arc::new(
-            LocalLedger::open(&format!("{}/coin", config.db_path))
-                .expect("failed to open coin ledger"),
-        );
+        let coin_ledger =
+            Arc::new(LocalLedger::open(&format!("{}/coin", config.db_path)).map_err(node_err)?);
         let coin_transport = Arc::new(FfiCoinTransport {
             handle: handle.clone(),
         });
@@ -535,7 +545,7 @@ pub fn init_node(config: NodeConfig) {
                 if let Ok(mut g) = cm_task.lock() {
                     *g = mode;
                 }
-                if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                     cb.on_connectivity_changed(mode.into());
                 }
                 if mode == NetConnectivityMode::Internet {
@@ -551,7 +561,7 @@ pub fn init_node(config: NodeConfig) {
 
         let enc_keypair =
             mycelium_node::secrets::load_or_create_enc_keypair(&config.db_path, storage_key)
-                .expect("failed to load enc keypair");
+                .map_err(node_err)?;
 
         let (app_node, mut inbox) = AppNode::new(
             handle.clone(),
@@ -574,7 +584,7 @@ pub fn init_node(config: NodeConfig) {
                 tick.tick().await;
                 let peers = peer_handle.known_peers().await;
                 let current: HashSet<String> = peers.into_iter().collect();
-                if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                     for peer in current.difference(&known) {
                         cb.on_peer_discovered(peer.clone());
                     }
@@ -590,22 +600,22 @@ pub fn init_node(config: NodeConfig) {
             loop {
                 tokio::select! {
                     Ok(chat) = inbox.chat_rx.recv() => {
-                        if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                        if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                             cb.on_chat_received(to_chat_message(chat.message, chat.from_peer));
                         }
                     }
                     Ok(mail) = inbox.mail_rx.recv() => {
-                        if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                        if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                             cb.on_mail_received(to_mail_message(mail, false));
                         }
                     }
                     Ok(post) = inbox.bulletin_rx.recv() => {
-                        if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                        if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                             cb.on_bulletin_received(to_bulletin(post));
                         }
                     }
                     Ok(listing) = inbox.appstore_rx.recv() => {
-                        if let Some(cb) = CALLBACK.lock().expect("callback lock").clone() {
+                        if let Some(cb) = recover_mutex(&CALLBACK).clone() {
                             cb.on_app_store_listing(to_app_store_listing(listing));
                         }
                     }
@@ -629,13 +639,14 @@ pub fn init_node(config: NodeConfig) {
             hot_wallet,
             connectivity_mode,
         }));
-        *NODE.lock().expect("node lock") = Some(state);
-    });
+        *recover_mutex(&NODE) = Some(state);
+        Ok(())
+    })
 }
 
 pub fn stop_node() {
     let Some(runtime) = RUNTIME.get() else { return };
-    let state = NODE.lock().expect("node lock").take();
+    let state = recover_mutex(&NODE).take();
     runtime.block_on(async {
         if let Some(state) = state {
             let guard = state.write().await;
@@ -786,25 +797,26 @@ pub fn list_pending_contacts() -> Vec<ContactInfo> {
     })
 }
 
-pub fn add_contact(peer_id: String, display_name: String, accepted: bool) -> ContactInfo {
+pub fn add_contact(
+    peer_id: String,
+    display_name: String,
+    accepted: bool,
+) -> Result<ContactInfo, MyceliumException> {
     with_state(|state| {
-        contact_to_info(
+        Ok(contact_to_info(
             state
                 .app_node
                 .add_contact(&peer_id, &display_name, accepted)
-                .expect("add contact"),
-        )
+                .map_err(node_err)?,
+        ))
     })
 }
 
-pub fn accept_contact(peer_id: String) -> ContactInfo {
+pub fn accept_contact(peer_id: String) -> Result<ContactInfo, MyceliumException> {
     with_state(|state| {
-        contact_to_info(
-            state
-                .app_node
-                .accept_contact(&peer_id)
-                .expect("accept contact"),
-        )
+        Ok(contact_to_info(
+            state.app_node.accept_contact(&peer_id).map_err(node_err)?,
+        ))
     })
 }
 
@@ -838,18 +850,18 @@ pub fn list_groups() -> Vec<GroupInfo> {
     })
 }
 
-pub fn create_group(name: String) -> GroupInfo {
+pub fn create_group(name: String) -> Result<GroupInfo, MyceliumException> {
     let state = state_arc();
     runtime().block_on(async {
         let state = state.read().await;
         let g = Group::new(name);
-        state.app_node.storage().save_group(&g).expect("save group");
-        GroupInfo {
+        state.app_node.storage().save_group(&g).map_err(node_err)?;
+        Ok(GroupInfo {
             id: g.id.clone(),
             name: g.name.clone(),
             member_count: g.members.len() as u32,
             created_at_ms: g.created_at_ms,
-        }
+        })
     })
 }
 
@@ -1244,7 +1256,7 @@ pub fn add_bootstrap_peer(multiaddr: String) {
 }
 
 pub fn set_event_callback(callback: Box<dyn NodeEventCallback>) {
-    *CALLBACK.lock().expect("callback lock") = Some(Arc::from(callback));
+    *recover_mutex(&CALLBACK) = Some(Arc::from(callback));
 }
 
 pub fn wallet_address() -> String {
@@ -1338,7 +1350,7 @@ pub fn hot_wallet_status() -> HotWalletStatus {
         let st = state.read().await;
         let (conf, pend) = st.coin_node.balance().unwrap_or((0, 0));
         let cfg = st.hot_wallet.config().await;
-        let net = *st.connectivity_mode.lock().expect("connectivity lock");
+        let net = *recover_mutex(&st.connectivity_mode);
         let needs_refill = cfg.cold_wallet_address.is_some() && conf < cfg.refill_threshold_muon;
         HotWalletStatus {
             confirmed_muon: conf,
@@ -1353,7 +1365,7 @@ pub fn hot_wallet_status() -> HotWalletStatus {
 
 pub fn current_connectivity_mode() -> ConnectivityMode {
     with_state(|s| {
-        let net = *s.connectivity_mode.lock().expect("connectivity lock");
+        let net = *recover_mutex(&s.connectivity_mode);
         net.into()
     })
 }
@@ -1391,45 +1403,43 @@ pub fn miniapp_issue_capability(
     app_id: String,
     permission: String,
     session_token: String,
-) -> String {
+) -> Result<String, MyceliumException> {
     with_state(|s| {
         let perm = mycelium_app::miniapp::parse_permission_name(&permission)
-            .unwrap_or_else(|| panic!("unknown permission: {permission}"));
-        mycelium_app::miniapp::issue_capability(
+            .ok_or_else(|| node_err(format!("unknown permission: {permission}")))?;
+        Ok(mycelium_app::miniapp::issue_capability(
             &s.cap_mac_key,
             &app_id,
             &perm,
             &session_token,
             mycelium_app::miniapp::DEFAULT_CAP_TTL_MS,
-        )
+        ))
     })
 }
 
-pub fn miniapp_publish_revocation(app_id: String, reason: String) {
+pub fn miniapp_publish_revocation(app_id: String, reason: String) -> Result<(), MyceliumException> {
     runtime().block_on(async {
         let st = state_arc();
         let guard = st.read().await;
-        let keypair = mycelium_node::load_or_create_keypair(&guard.coin_identity_path)
-            .expect("load identity keypair for revocation");
+        let keypair =
+            mycelium_node::load_or_create_keypair(&guard.coin_identity_path).map_err(node_err)?;
         let entry = guard
             .app_store
             .build_revocation_gossip(&app_id, &reason, &guard.local_peer_id, &keypair)
-            .expect("build revocation gossip");
+            .map_err(node_err)?;
         guard
             .app_node
             .publish_app_revocation(&entry)
             .await
-            .expect("publish revocation gossip");
-    });
+            .map_err(node_err)?;
+        Ok(())
+    })
 }
 
-pub fn miniapp_get_policy(app_id: String) -> MiniAppPolicyData {
+pub fn miniapp_get_policy(app_id: String) -> Result<MiniAppPolicyData, MyceliumException> {
     with_state(|s| {
-        let p = s
-            .app_store
-            .policy_snapshot(&app_id)
-            .expect("miniapp policy");
-        MiniAppPolicyData {
+        let p = s.app_store.policy_snapshot(&app_id).map_err(node_err)?;
+        Ok(MiniAppPolicyData {
             app_id: p.app_id,
             reputation_score: p.reputation_score,
             safe_mode_active: p.safe_mode_active,
@@ -1438,22 +1448,24 @@ pub fn miniapp_get_policy(app_id: String) -> MiniAppPolicyData {
             user_safe_mode: p.user_safe_mode,
             revoked: p.revoked,
             strict_csp_eligible: p.strict_csp_eligible,
-        }
+        })
     })
 }
 
-pub fn miniapp_set_safe_mode(app_id: String, enabled: bool) {
+pub fn miniapp_set_safe_mode(app_id: String, enabled: bool) -> Result<(), MyceliumException> {
     with_state(|s| {
         s.app_store
             .set_user_safe_mode(&app_id, enabled)
-            .expect("set safe mode");
-    });
+            .map_err(node_err)?;
+        Ok(())
+    })
 }
 
-pub fn miniapp_report_app(app_id: String) {
+pub fn miniapp_report_app(app_id: String) -> Result<(), MyceliumException> {
     with_state(|s| {
-        s.app_store.record_user_report(&app_id).expect("report app");
-    });
+        s.app_store.record_user_report(&app_id).map_err(node_err)?;
+        Ok(())
+    })
 }
 
 fn mini_app_manifest_to_info(m: mycelium_app::miniapp::MiniAppManifest) -> MiniAppInfo {
@@ -1564,12 +1576,13 @@ pub fn install_official_bundle(app_id: String) -> Result<MiniAppInfo, MyceliumEx
     })
 }
 
-pub fn uninstall_app(app_id: String) {
+pub fn uninstall_app(app_id: String) -> Result<(), MyceliumException> {
     mycelium_app::miniapp::revoke_session(&app_id);
     with_state(|s| {
-        s.app_store.uninstall(&app_id).expect("uninstall mini-app");
+        s.app_store.uninstall(&app_id).map_err(node_err)?;
         let _ = s.app_node.storage().miniapp_clear_all_for_app(&app_id);
-    });
+        Ok(())
+    })
 }
 
 pub fn get_app_file(app_id: String, path: String) -> Option<Vec<u8>> {
@@ -1602,31 +1615,30 @@ pub fn miniapp_storage_get(app_id: String, key: String) -> Option<String> {
     })
 }
 
-pub fn miniapp_storage_set(app_id: String, key: String, value: String) {
+pub fn miniapp_storage_set(
+    app_id: String,
+    key: String,
+    value: String,
+) -> Result<(), MyceliumException> {
     use mycelium_app::miniapp::storage_quota::{validate_key, validate_value};
     with_state(|s| {
-        if let Err(e) = validate_key(&key) {
-            panic!("miniapp storage set: {e}");
-        }
-        if let Err(e) = validate_value(&value) {
-            panic!("miniapp storage set: {e}");
-        }
+        validate_key(&key).map_err(node_err)?;
+        validate_value(&value).map_err(node_err)?;
         let sk = format!("app:{app_id}:{key}");
         s.app_node
             .storage()
             .miniapp_set(&sk, &value)
-            .expect("miniapp storage set");
-    });
+            .map_err(node_err)?;
+        Ok(())
+    })
 }
 
-pub fn miniapp_storage_delete(app_id: String, key: String) {
+pub fn miniapp_storage_delete(app_id: String, key: String) -> Result<(), MyceliumException> {
     with_state(|s| {
         let sk = format!("app:{app_id}:{key}");
-        s.app_node
-            .storage()
-            .miniapp_delete(&sk)
-            .expect("miniapp storage delete");
-    });
+        s.app_node.storage().miniapp_delete(&sk).map_err(node_err)?;
+        Ok(())
+    })
 }
 
 pub fn miniapp_bridge_call(app_id: String, method: String, args_json: String) -> String {
@@ -1693,8 +1705,7 @@ fn runtime() -> &'static Runtime {
 }
 
 fn state_arc() -> Arc<RwLock<NodeState>> {
-    NODE.lock()
-        .expect("node lock")
+    recover_mutex(&NODE)
         .as_ref()
         .cloned()
         .expect("node not initialized")

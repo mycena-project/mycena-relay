@@ -3,11 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Signature scheme v1 (ID in signed bytes) launch time (UTC 2026-05-22).
-const SIG_V1_LAUNCH_MS: u64 = 1_779_430_651_000;
-/// Legacy envelopes with invalid v1 signatures are accepted with a warning for this window.
-const SIG_TRANSITION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
-
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct ContentId(pub String);
 
@@ -69,12 +64,24 @@ impl Envelope {
         }
     }
 
-    /// Envelope without a mesh signature (gossip relay; author auth lives in payload).
+    /// Gossip/relay envelope: content id is stable (no clock) so redelivery dedups.
     pub fn new_unsigned(from_peer: String, to_peer: Option<String>, payload: Vec<u8>) -> Self {
-        let mut e = Self::new(from_peer, to_peer, payload);
-        e.signature = None;
-        e.sig_version = 0;
-        e
+        let mut digest_input = from_peer.as_bytes().to_vec();
+        digest_input.extend_from_slice(&payload);
+        Self {
+            id: ContentId::from_bytes(&digest_input),
+            from_peer,
+            to_peer,
+            payload,
+            created_at_ms: now_ms(),
+            ttl_secs: 7 * 24 * 60 * 60,
+            priority: Priority::Normal,
+            signature: None,
+            sig_version: 0,
+            hop_count: 0,
+            max_hops: default_max_hops(),
+            author_peer: None,
+        }
     }
 
     pub fn sign(&mut self, keypair: &libp2p::identity::Keypair) -> anyhow::Result<()> {
@@ -106,24 +113,9 @@ impl Envelope {
         pk.verify(&bytes, sig)
     }
 
-    /// Verify signature; during the 7-day transition after v1 launch, accept failures with a warning.
     /// Peer ID whose key signed this envelope (author, not relay hop).
     pub fn signature_author_peer(&self) -> &str {
         self.author_peer.as_deref().unwrap_or(&self.from_peer)
-    }
-
-    pub fn verify_or_transition(&self, from_peer_id: &libp2p::PeerId) -> bool {
-        if self.verify(from_peer_id) {
-            return true;
-        }
-        if signature_transition_active() {
-            tracing::warn!(
-                "envelope signature verification failed (sig_version={}); accepting during transition window",
-                self.sig_version
-            );
-            return true;
-        }
-        false
     }
 
     fn bytes_for_signing(&self) -> Vec<u8> {
@@ -158,10 +150,6 @@ impl Envelope {
     }
 }
 
-fn signature_transition_active() -> bool {
-    now_ms() < SIG_V1_LAUNCH_MS.saturating_add(SIG_TRANSITION_MS)
-}
-
 fn default_max_hops() -> u8 {
     8
 }
@@ -194,5 +182,14 @@ mod tests {
             !replayed.verify(&peer_id),
             "replay with changed timestamp must fail verification"
         );
+    }
+
+    #[test]
+    fn unsigned_id_is_stable_across_calls() {
+        let a = Envelope::new_unsigned("from".into(), None, b"same".to_vec());
+        let b = Envelope::new_unsigned("from".into(), None, b"same".to_vec());
+        assert_eq!(a.id, b.id);
+        let c = Envelope::new_unsigned("from".into(), None, b"other".to_vec());
+        assert_ne!(a.id, c.id);
     }
 }

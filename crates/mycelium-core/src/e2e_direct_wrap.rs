@@ -10,18 +10,17 @@ const MAGIC: &[u8] = b"MYCDR01\0";
 const MAX_AUTHOR_BYTES: usize = 512;
 
 /// Wraps app-level ciphertext plaintext: `MAGIC || be32(len) || author_utf8 || app`.
-pub fn wrap_inner(author_peer_id: &str, app: &[u8]) -> Vec<u8> {
+pub fn wrap_inner(author_peer_id: &str, app: &[u8]) -> anyhow::Result<Vec<u8>> {
     let auth = author_peer_id.as_bytes();
-    assert!(
-        auth.len() <= MAX_AUTHOR_BYTES,
-        "author peer id too long for E2E wrap"
-    );
+    if auth.len() > MAX_AUTHOR_BYTES {
+        anyhow::bail!("author peer id too long for E2E wrap");
+    }
     let mut v = Vec::with_capacity(MAGIC.len() + 4 + auth.len() + app.len());
     v.extend_from_slice(MAGIC);
     v.extend_from_slice(&(auth.len() as u32).to_be_bytes());
     v.extend_from_slice(auth);
     v.extend_from_slice(app);
-    v
+    Ok(v)
 }
 
 /// Returns `(logical_author_peer_id, app_bytes)` for `AppMessage` decoding.
@@ -55,10 +54,16 @@ mod tests {
     #[test]
     fn wrap_unwrap_roundtrip() {
         let app = b"app-bytes";
-        let w = wrap_inner("12D3KooWAuthor", app);
+        let w = wrap_inner("12D3KooWAuthor", app).unwrap();
         let (a, p) = unwrap_inner(&w, "relay");
         assert_eq!(a, "12D3KooWAuthor");
         assert_eq!(p, app);
+    }
+
+    #[test]
+    fn wrap_rejects_oversized_author() {
+        let long = "x".repeat(MAX_AUTHOR_BYTES + 1);
+        assert!(wrap_inner(&long, b"app").is_err());
     }
 
     #[test]

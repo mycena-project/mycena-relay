@@ -65,7 +65,7 @@ fn explicit_storage_key_used_on_android_path() {
 }
 
 #[test]
-fn recreates_enc_key_when_ciphertext_unreadable() {
+fn refuses_to_mint_enc_key_when_ciphertext_unreadable() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().to_str().unwrap();
     let vault = SecretVault::open_with_migration(db, None).unwrap();
@@ -76,11 +76,30 @@ fn recreates_enc_key_when_ciphertext_unreadable() {
     )
     .unwrap();
 
-    let kp = secrets::load_or_create_enc_keypair(db, None).unwrap();
-    assert_eq!(kp.secret_bytes().len(), 32);
-    assert!(vault.secrets_dir().join("enc_x25519.enc").exists());
-    let blob = std::fs::read(vault.secrets_dir().join("enc_x25519.enc")).unwrap();
-    assert_ne!(blob, b"not-valid-chacha-ciphertext");
+    let err = match secrets::load_or_create_enc_keypair(db, None) {
+        Err(e) => e,
+        Ok(_) => panic!("expected fail-closed enc key load"),
+    };
+    assert!(
+        err.to_string().contains("unreadable"),
+        "expected fail-closed, got {err}"
+    );
+}
+
+#[test]
+fn refuses_to_mint_identity_when_ciphertext_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().to_str().unwrap();
+    let identity_path = format!("{db}/identity");
+    let key = [3u8; 32];
+    let _ = secrets::load_or_create_keypair(&identity_path, Some(key)).unwrap();
+    let enc_path = dir.path().join(".secrets/ed25519_identity.enc");
+    std::fs::write(&enc_path, b"not-valid-chacha-ciphertext").unwrap();
+    let err = secrets::load_or_create_keypair(&identity_path, Some(key)).unwrap_err();
+    assert!(
+        err.to_string().contains("unreadable") || err.to_string().contains("refusing"),
+        "expected fail-closed identity, got {err}"
+    );
 }
 
 #[test]

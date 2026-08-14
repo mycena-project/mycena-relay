@@ -412,7 +412,7 @@ impl AppNode {
             payload: AppPayload::Chat(chat.clone()),
         }
         .encode()?;
-        let wrapped = mycelium_core::e2e_direct_wrap::wrap_inner(&self.local_peer_id, &plaintext);
+        let wrapped = mycelium_core::e2e_direct_wrap::wrap_inner(&self.local_peer_id, &plaintext)?;
         if let Some(pk) = self.handle.peer_x25519_public(&to_peer).await {
             let encrypted = mycelium_core::crypto::encrypt_for(&wrapped, &pk)?;
             let wire = WireMessage::EncryptedDirect {

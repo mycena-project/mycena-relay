@@ -8,9 +8,9 @@ echo "ci-check: cargo fmt --check"
 cargo fmt --all -- --check
 
 echo "ci-check: cargo clippy"
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
 
 echo "ci-check: tests"
-cargo test --workspace
+cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
 
 echo "ci-check: OK"

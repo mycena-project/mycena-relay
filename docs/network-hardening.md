@@ -45,11 +45,12 @@ Behavior:
 - `hop_count: u8` (`#[serde(default)]`)
 - `max_hops: u8` (`#[serde(default = "default_max_hops")]`)
 
-Compatibility details:
+Compatibility details (SD-030):
 
 - old stored messages deserialize cleanly due to `serde(default)`
-- signature verification is enforced only when a signature exists
-- unsigned legacy messages remain accepted for backward compatibility
+- inbound `WireMessage::Data` without a valid author signature is dropped
+- unsigned gossip relay bodies are limited to the tagged payloads `[mycelium:group]` and `[appstore]`
+- there is no grace period for unsigned user data (`UNSIGNED_GRACE_PERIOD_UNTIL_MS = 0`)
 
 ## 4) Anti-Entropy (Bloom)
 
@@ -122,6 +123,6 @@ Added endpoints:
 ## 10) Verification Commands
 
 ```bash
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
+cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
 ```

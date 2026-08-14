@@ -5,13 +5,12 @@
 use libp2p::identity;
 use mycelium_core::at_rest::SecretVault;
 use mycelium_core::crypto::EncryptionKeypair;
+use mycelium_core::identity::{self as core_identity};
 use std::path::Path;
 
-const IDENTITY_SECRET: &str = "ed25519_identity";
-const ENC_SECRET: &str = "enc_x25519";
+pub use mycelium_core::identity::StorageKey;
 
-/// Optional 32-byte master key (Android); when `None`, OS keyring or fallback is used.
-pub type StorageKey = Option<[u8; 32]>;
+const ENC_SECRET: &str = "enc_x25519";
 
 pub fn open_vault(db_path: &str, storage_key: StorageKey) -> anyhow::Result<SecretVault> {
     SecretVault::open_with_migration(db_path, storage_key)
@@ -21,39 +20,22 @@ pub fn load_or_create_keypair(
     path: &str,
     storage_key: StorageKey,
 ) -> anyhow::Result<identity::Keypair> {
-    if let Some(parent) = Path::new(path).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let db_path = Path::new(path)
-        .parent()
-        .and_then(|p| p.to_str())
-        .unwrap_or(path);
-    let vault = open_vault(db_path, storage_key)?;
-
-    match vault.read_secret(IDENTITY_SECRET) {
-        Ok(Some(bytes)) => return keypair_from_ed25519_secret(&bytes),
-        Ok(None) => {}
-        Err(e) => {
-            tracing::warn!(
-                "unreadable encrypted identity at {:?}: {e}; removing corrupt secret",
-                vault.secrets_dir().join(format!("{IDENTITY_SECRET}.enc"))
-            );
-            let _ = vault.delete_secret(IDENTITY_SECRET);
-        }
+    if let Some(kp) = core_identity::load_keypair(path, storage_key)? {
+        return Ok(kp);
     }
 
     if let Some(legacy) = read_legacy_sled_identity(path)? {
-        vault.write_secret(IDENTITY_SECRET, &legacy)?;
+        core_identity::persist_keypair(
+            path,
+            storage_key,
+            &core_identity::keypair_from_ed25519_secret(&legacy)?,
+        )?;
         remove_legacy_sled_secret(path)?;
         tracing::info!("migrated Ed25519 identity to encrypted at-rest storage");
-        return keypair_from_ed25519_secret(&legacy);
+        return core_identity::keypair_from_ed25519_secret(&legacy);
     }
 
-    let keypair = identity::Keypair::generate_ed25519();
-    let secret = ed25519_secret_bytes(&keypair)?;
-    vault.write_secret(IDENTITY_SECRET, &secret)?;
-    tracing::info!("generated new Ed25519 identity (encrypted at rest)");
-    Ok(keypair)
+    core_identity::load_or_create_keypair(path, storage_key)
 }
 
 pub fn load_or_create_enc_keypair(
@@ -66,11 +48,10 @@ pub fn load_or_create_enc_keypair(
         Ok(Some(bytes)) => return enc_from_secret_bytes(&bytes),
         Ok(None) => {}
         Err(e) => {
-            tracing::warn!(
-                "unreadable encrypted enc key at {:?}: {e}; removing corrupt secret",
+            anyhow::bail!(
+                "unreadable encrypted enc key at {:?}: {e}; refusing to mint a new key",
                 vault.secrets_dir().join(format!("{ENC_SECRET}.enc"))
             );
-            let _ = vault.delete_secret(ENC_SECRET);
         }
     }
 
@@ -89,23 +70,6 @@ pub fn load_or_create_enc_keypair(
     Ok(kp)
 }
 
-fn keypair_from_ed25519_secret(secret: &[u8]) -> anyhow::Result<identity::Keypair> {
-    let mut secret_bytes = secret.to_vec();
-    let sk = identity::ed25519::SecretKey::try_from_bytes(&mut secret_bytes)
-        .map_err(|e| anyhow::anyhow!("invalid ed25519 secret: {e}"))?;
-    Ok(identity::Keypair::from(identity::ed25519::Keypair::from(
-        sk,
-    )))
-}
-
-fn ed25519_secret_bytes(keypair: &identity::Keypair) -> anyhow::Result<Vec<u8>> {
-    let ed = keypair
-        .clone()
-        .try_into_ed25519()
-        .map_err(|_| anyhow::anyhow!("keypair is not ed25519"))?;
-    Ok(ed.secret().as_ref().to_vec())
-}
-
 fn enc_from_secret_bytes(bytes: &[u8]) -> anyhow::Result<EncryptionKeypair> {
     let arr: [u8; 32] = bytes
         .try_into()
@@ -114,6 +78,9 @@ fn enc_from_secret_bytes(bytes: &[u8]) -> anyhow::Result<EncryptionKeypair> {
 }
 
 fn read_legacy_sled_identity(path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
     let db = sled::open(path)?;
     let tree = db.open_tree("identity")?;
     Ok(tree.get(b"ed25519_secret_key")?.map(|v| v.to_vec()))

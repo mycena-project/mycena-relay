@@ -14,7 +14,7 @@ fn encrypted_direct_decrypt_has_no_mesh_signature() {
     let sender_enc = EncryptionKeypair::generate();
 
     let app_payload = b"hello-e2e-app-bytes".to_vec();
-    let inner = e2e_direct_wrap::wrap_inner(author, &app_payload);
+    let inner = e2e_direct_wrap::wrap_inner(author, &app_payload).unwrap();
     let encrypted_payload = encrypt_for(&inner, &recipient_enc.public).unwrap();
 
     let wire = WireMessage::EncryptedDirect {

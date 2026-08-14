@@ -108,7 +108,7 @@ pub async fn start_api_server(
         .route("/api/v1/scopes", get(get_scopes))
         .route("/api/v1/scopes/subscribe", post(post_scope_subscribe))
         .route("/api/v1/scopes/:scope", delete(delete_scope))
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::new())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -123,13 +123,13 @@ async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         peer_id: state.app.local_peer_id().to_string(),
         display_name: state.app.display_name().await,
-        peers: Vec::new(),
+        peers: state.app.node_handle().known_peers().await,
         metrics,
     })
 }
 
-async fn get_peers() -> Json<Vec<serde_json::Value>> {
-    Json(Vec::new())
+async fn get_peers(State(state): State<ApiState>) -> Json<Vec<String>> {
+    Json(state.app.node_handle().known_peers().await)
 }
 
 async fn get_chat(

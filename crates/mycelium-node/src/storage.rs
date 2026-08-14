@@ -19,15 +19,24 @@ impl SledMessageStore {
             .flush_every_ms(Some(5000))
             .open()
             .with_context(|| format!("opening sled db at {path}"))?;
+        let mut order = Vec::new();
+        for item in db.iter() {
+            let (k, v) = item?;
+            let id = String::from_utf8_lossy(&k).into_owned();
+            let ts = bincode::deserialize::<DirectMessage>(&v)
+                .map(|m| m.envelope.created_at_ms)
+                .unwrap_or(0);
+            order.push((ts, id));
+        }
+        order.sort_by_key(|(ts, _)| *ts);
         Ok(Self {
             db,
-            order: Arc::new(Mutex::new(Vec::new())),
+            order: Arc::new(Mutex::new(order)),
         })
     }
 
     pub async fn gc_expired(&self) -> anyhow::Result<usize> {
         let now = now_ms();
-        let mut deleted = 0usize;
         let mut order = self.order.lock().await;
         let mut to_delete = Vec::new();
         order.retain(|(ts, id)| {
@@ -38,10 +47,16 @@ impl SledMessageStore {
                 true
             }
         });
-        for id in to_delete {
-            self.db.remove(id.as_bytes())?;
-            deleted += 1;
-        }
+        drop(order);
+        let deleted = to_delete.len();
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            for id in &to_delete {
+                db.remove(id.as_bytes())?;
+            }
+            anyhow::Ok(())
+        })
+        .await??;
         Ok(deleted)
     }
 
@@ -59,8 +74,10 @@ impl MessageStore for SledMessageStore {
     async fn persist(&self, message: &DirectMessage) -> anyhow::Result<()> {
         let key = message.envelope.id.0.clone();
         let encoded = bincode::serialize(message)?;
-        let ts = now_ms();
-        self.db.insert(key.as_bytes(), encoded)?;
+        let ts = message.envelope.created_at_ms;
+        let db = self.db.clone();
+        let key_bytes = key.clone();
+        tokio::task::spawn_blocking(move || db.insert(key_bytes.as_bytes(), encoded)).await??;
         self.order.lock().await.push((ts, key));
         Ok(())
     }
@@ -136,6 +153,12 @@ mod tests {
         assert!(store.contains(&id).await.expect("contains"));
         let loaded = store.load_by_id(&id).await.expect("load").expect("some");
         assert_eq!(loaded.body, "roundtrip");
+
+        drop(store);
+        let store2 = SledMessageStore::open(dir.path().to_str().expect("path")).expect("reopen");
+        let loaded2 = store2.load_by_id(&id).await.expect("load2").expect("some");
+        assert_eq!(loaded2.body, "roundtrip");
+        assert_eq!(store2.recent(1).await.expect("recent").len(), 1);
     }
 
     #[tokio::test]

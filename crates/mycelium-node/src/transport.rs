@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycelium Project
-use crate::behaviour::{
-    make_direct_response, DirectMessageRequest, DirectMessageResponse, MeshBehaviour,
-};
+use crate::behaviour::{make_direct_response, DirectMessageRequest, MeshBehaviour};
 use crate::connectivity::{kad_action_for_mode, KadConnectivityAction};
 use futures::StreamExt;
 use libp2p::multiaddr::Protocol;
@@ -634,9 +632,6 @@ impl Libp2pTransport {
         }
     }
 }
-
-#[allow(dead_code)]
-fn _assert_response_type(_: DirectMessageResponse) {}
 
 fn message_id_for_wire(message: &WireMessage) -> String {
     match message {

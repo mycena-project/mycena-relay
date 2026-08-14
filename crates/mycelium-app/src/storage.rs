@@ -5,13 +5,16 @@ use crate::envelope::{BulletinPost, ChatMessage, MailMessage};
 use crate::groups::Group;
 use crate::scope_key::ScopeKey;
 use mycelium_core::data::now_ms;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppStorage {
     db: sled::Db,
     /// When set, mini-app KV values are encrypted at rest (Cell C2).
     at_rest_key: Option<[u8; 32]>,
+    trees: Mutex<HashMap<String, sled::Tree>>,
 }
 
 impl AppStorage {
@@ -24,17 +27,32 @@ impl AppStorage {
             .path(path)
             .flush_every_ms(Some(5000))
             .open()?;
-        Ok(Self { db, at_rest_key })
+        Ok(Self {
+            db,
+            at_rest_key,
+            trees: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn tree(&self, name: impl AsRef<str>) -> anyhow::Result<sled::Tree> {
+        let name = name.as_ref();
+        let mut cache = self.trees.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = cache.get(name) {
+            return Ok(t.clone());
+        }
+        let t = self.db.open_tree(name)?;
+        cache.insert(name.to_string(), t.clone());
+        Ok(t)
     }
 
     pub fn save_chat(&self, peer_id: &str, msg: &ChatMessage) -> anyhow::Result<()> {
-        let tree = self.db.open_tree(format!("chat:{peer_id}"))?;
+        let tree = self.tree(format!("chat:{peer_id}"))?;
         tree.insert(ts_key(msg.timestamp_ms), bincode::serialize(msg)?)?;
         Ok(())
     }
 
     pub fn chat_history(&self, peer_id: &str, limit: usize) -> anyhow::Result<Vec<ChatMessage>> {
-        let tree = self.db.open_tree(format!("chat:{peer_id}"))?;
+        let tree = self.tree(format!("chat:{peer_id}"))?;
         let mut out = Vec::new();
         for item in tree.iter().rev().take(limit) {
             let (_k, v) = item?;
@@ -44,13 +62,13 @@ impl AppStorage {
     }
 
     pub fn save_contact(&self, contact: &Contact) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("contacts:data")?;
+        let tree = self.tree("contacts:data")?;
         tree.insert(contact.peer_id.as_bytes(), bincode::serialize(contact)?)?;
         Ok(())
     }
 
     pub fn contact_by_id(&self, peer_id: &str) -> anyhow::Result<Option<Contact>> {
-        let tree = self.db.open_tree("contacts:data")?;
+        let tree = self.tree("contacts:data")?;
         Ok(match tree.get(peer_id.as_bytes())? {
             Some(v) => Some(bincode::deserialize(&v)?),
             None => None,
@@ -58,7 +76,7 @@ impl AppStorage {
     }
 
     pub fn all_contacts(&self) -> anyhow::Result<Vec<Contact>> {
-        let tree = self.db.open_tree("contacts:data")?;
+        let tree = self.tree("contacts:data")?;
         let mut out: Vec<Contact> = Vec::new();
         for item in tree.iter() {
             let (_k, v) = item?;
@@ -77,7 +95,7 @@ impl AppStorage {
     }
 
     pub fn delete_contact(&self, peer_id: &str) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("contacts:data")?;
+        let tree = self.tree("contacts:data")?;
         tree.remove(peer_id.as_bytes())?;
         Ok(())
     }
@@ -103,14 +121,14 @@ impl AppStorage {
     }
 
     pub fn save_bulletin(&self, post: &BulletinPost) -> anyhow::Result<()> {
-        let tree = self.db.open_tree(format!("bulletin:{}", post.scope))?;
+        let tree = self.tree(format!("bulletin:{}", post.scope))?;
         let key = format!("{:020}:{}", post.expires_at_ms, post.id);
         tree.insert(key.as_bytes(), bincode::serialize(post)?)?;
         Ok(())
     }
 
     pub fn bulletins_for_scope(&self, scope: &str) -> anyhow::Result<Vec<BulletinPost>> {
-        let tree = self.db.open_tree(format!("bulletin:{scope}"))?;
+        let tree = self.tree(format!("bulletin:{scope}"))?;
         let mut out = Vec::new();
         let now = now_ms();
         for item in tree.iter() {
@@ -134,18 +152,11 @@ impl AppStorage {
             if !name.starts_with("bulletin:") {
                 continue;
             }
-            let tree = self.db.open_tree(name)?;
+            let tree = self.tree(name)?;
+            let end = format!("{now:020}");
             let keys: Vec<Vec<u8>> = tree
-                .iter()
-                .filter_map(|res| {
-                    let (k, v) = res.ok()?;
-                    let post: BulletinPost = bincode::deserialize(&v).ok()?;
-                    if post.expires_at_ms < now {
-                        Some(k.to_vec())
-                    } else {
-                        None
-                    }
-                })
+                .range(..end.as_bytes())
+                .filter_map(|res| res.ok().map(|(k, _)| k.to_vec()))
                 .collect();
             for k in keys {
                 tree.remove(k)?;
@@ -156,7 +167,7 @@ impl AppStorage {
     }
 
     pub fn save_mail_inbox(&self, mail: &MailMessage) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("mail:inbox")?;
+        let tree = self.tree("mail:inbox")?;
         tree.insert(
             ts_uuid_key(mail.timestamp_ms, mail.id),
             bincode::serialize(mail)?,
@@ -165,7 +176,7 @@ impl AppStorage {
     }
 
     pub fn save_mail_sent(&self, mail: &MailMessage) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("mail:sent")?;
+        let tree = self.tree("mail:sent")?;
         tree.insert(
             ts_uuid_key(mail.timestamp_ms, mail.id),
             bincode::serialize(mail)?,
@@ -174,40 +185,40 @@ impl AppStorage {
     }
 
     pub fn inbox(&self, limit: usize) -> anyhow::Result<Vec<MailMessage>> {
-        let tree = self.db.open_tree("mail:inbox")?;
+        let tree = self.tree("mail:inbox")?;
         newest_mails(&tree, limit)
     }
 
     pub fn sent(&self, limit: usize) -> anyhow::Result<Vec<MailMessage>> {
-        let tree = self.db.open_tree("mail:sent")?;
+        let tree = self.tree("mail:sent")?;
         newest_mails(&tree, limit)
     }
 
     pub fn mark_read(&self, mail_id: &Uuid) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("mail:read")?;
+        let tree = self.tree("mail:read")?;
         tree.insert(mail_id.to_string().as_bytes(), &[1])?;
         Ok(())
     }
 
     pub fn is_read(&self, mail_id: &Uuid) -> anyhow::Result<bool> {
-        let tree = self.db.open_tree("mail:read")?;
+        let tree = self.tree("mail:read")?;
         Ok(tree.get(mail_id.to_string().as_bytes())?.is_some())
     }
 
     pub fn save_group(&self, group: &Group) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("groups:data")?;
+        let tree = self.tree("groups:data")?;
         tree.insert(group.id.as_bytes(), bincode::serialize(group)?)?;
         Ok(())
     }
 
     pub fn delete_group(&self, id: &str) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("groups:data")?;
+        let tree = self.tree("groups:data")?;
         tree.remove(id.as_bytes())?;
         Ok(())
     }
 
     pub fn group_by_id(&self, id: &str) -> anyhow::Result<Option<Group>> {
-        let tree = self.db.open_tree("groups:data")?;
+        let tree = self.tree("groups:data")?;
         Ok(match tree.get(id.as_bytes())? {
             Some(v) => Some(bincode::deserialize(&v)?),
             None => None,
@@ -215,7 +226,7 @@ impl AppStorage {
     }
 
     pub fn all_groups(&self) -> anyhow::Result<Vec<Group>> {
-        let tree = self.db.open_tree("groups:data")?;
+        let tree = self.tree("groups:data")?;
         let mut out = Vec::new();
         for item in tree.iter() {
             let (_k, v) = item?;
@@ -234,7 +245,7 @@ impl AppStorage {
     }
 
     pub fn save_group_chat(&self, group_id: &str, msg: &ChatMessage) -> anyhow::Result<()> {
-        let tree = self.db.open_tree(format!("groupchat:{group_id}"))?;
+        let tree = self.tree(format!("groupchat:{group_id}"))?;
         tree.insert(
             ts_uuid_key(msg.timestamp_ms, msg.id),
             bincode::serialize(msg)?,
@@ -247,7 +258,7 @@ impl AppStorage {
         group_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<ChatMessage>> {
-        let tree = self.db.open_tree(format!("groupchat:{group_id}"))?;
+        let tree = self.tree(format!("groupchat:{group_id}"))?;
         let mut out = Vec::new();
         for item in tree.iter().rev().take(limit) {
             let (_k, v) = item?;
@@ -258,7 +269,7 @@ impl AppStorage {
 
     /// Mini-app bridge KV (`app:<app_id>:<user_key>`) in the main app sled DB.
     pub fn miniapp_get(&self, scoped_key: &str) -> anyhow::Result<Option<String>> {
-        let tree = self.db.open_tree("miniapp_storage")?;
+        let tree = self.tree("miniapp_storage")?;
         Ok(match tree.get(scoped_key.as_bytes())? {
             Some(v) => Some(self.decode_miniapp_value(scoped_key, &v)?),
             None => None,
@@ -266,7 +277,7 @@ impl AppStorage {
     }
 
     pub fn miniapp_set(&self, scoped_key: &str, value: &str) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("miniapp_storage")?;
+        let tree = self.tree("miniapp_storage")?;
         let bytes = self.encode_miniapp_value(scoped_key, value)?;
         tree.insert(scoped_key.as_bytes(), bytes)?;
         Ok(())
@@ -274,9 +285,7 @@ impl AppStorage {
 
     fn encode_miniapp_value(&self, scoped_key: &str, value: &str) -> anyhow::Result<Vec<u8>> {
         match &self.at_rest_key {
-            Some(master) => Ok(crate::miniapp_storage_enc::encrypt_value(
-                master, scoped_key, value,
-            )),
+            Some(master) => crate::miniapp_storage_enc::encrypt_value(master, scoped_key, value),
             None => Ok(value.as_bytes().to_vec()),
         }
     }
@@ -289,13 +298,13 @@ impl AppStorage {
     }
 
     pub fn miniapp_delete(&self, scoped_key: &str) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("miniapp_storage")?;
+        let tree = self.tree("miniapp_storage")?;
         tree.remove(scoped_key.as_bytes())?;
         Ok(())
     }
 
     pub fn miniapp_list(&self, scoped_prefix: &str) -> anyhow::Result<Vec<String>> {
-        let tree = self.db.open_tree("miniapp_storage")?;
+        let tree = self.tree("miniapp_storage")?;
         let mut out = Vec::new();
         for item in tree.scan_prefix(scoped_prefix.as_bytes()) {
             let (k, _) = item?;
@@ -307,7 +316,7 @@ impl AppStorage {
 
     pub fn miniapp_clear_all_for_app(&self, app_id: &str) -> anyhow::Result<()> {
         let prefix = format!("app:{app_id}:");
-        let tree = self.db.open_tree("miniapp_storage")?;
+        let tree = self.tree("miniapp_storage")?;
         let keys: Vec<Vec<u8>> = tree
             .scan_prefix(prefix.as_bytes())
             .filter_map(|r| r.ok())
@@ -320,13 +329,13 @@ impl AppStorage {
     }
 
     pub fn save_scope_key(&self, sk: &ScopeKey) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("scope_keys")?;
+        let tree = self.tree("scope_keys")?;
         tree.insert(sk.scope.as_bytes(), serde_json::to_vec(sk)?.as_slice())?;
         Ok(())
     }
 
     pub fn get_scope_key(&self, scope: &str) -> anyhow::Result<Option<ScopeKey>> {
-        let tree = self.db.open_tree("scope_keys")?;
+        let tree = self.tree("scope_keys")?;
         Ok(match tree.get(scope.as_bytes())? {
             Some(bytes) => Some(serde_json::from_slice(&bytes)?),
             None => None,
@@ -334,7 +343,7 @@ impl AppStorage {
     }
 
     pub fn all_scope_keys(&self) -> anyhow::Result<Vec<ScopeKey>> {
-        let tree = self.db.open_tree("scope_keys")?;
+        let tree = self.tree("scope_keys")?;
         let mut keys = Vec::new();
         for item in tree.iter() {
             let (_, v) = item?;
@@ -347,7 +356,7 @@ impl AppStorage {
     }
 
     pub fn delete_scope_key(&self, scope: &str) -> anyhow::Result<()> {
-        let tree = self.db.open_tree("scope_keys")?;
+        let tree = self.tree("scope_keys")?;
         tree.remove(scope.as_bytes())?;
         Ok(())
     }

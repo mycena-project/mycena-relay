@@ -12,6 +12,9 @@ pub const RELAY_IPV4: &str = "149.248.194.198";
 
 pub const RELAY_PEER_ID: &str = "12D3KooWSkVL5ThExB7paWskDKc2pUobKrV9yWVabMpUdw8hE2wj";
 
+/// libp2p identify protocol version advertised by the public relay and mesh nodes.
+pub const IDENTIFY_PROTOCOL: &str = "/mycelium/1.0.0";
+
 /// Public relay / bootstrap infra — not a user device in Connect UI.
 pub fn is_relay_peer(peer_id: &str) -> bool {
     peer_id.trim() == RELAY_PEER_ID

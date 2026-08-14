@@ -56,14 +56,21 @@ impl FixedWindowRateLimiter {
     }
 
     fn allow(&mut self, key: &str, now_ms: u64) -> bool {
-        let entry = self.buckets.entry(key.to_string()).or_insert((0, now_ms));
-        if now_ms.saturating_sub(entry.1) >= self.window_ms {
-            *entry = (0, now_ms);
+        if self.buckets.len() > 4096 {
+            self.buckets
+                .retain(|_, (_, start)| now_ms.saturating_sub(*start) < self.window_ms);
         }
-        if entry.0 >= self.limit {
-            return false;
+        if let Some(entry) = self.buckets.get_mut(key) {
+            if now_ms.saturating_sub(entry.1) >= self.window_ms {
+                *entry = (0, now_ms);
+            }
+            if entry.0 >= self.limit {
+                return false;
+            }
+            entry.0 += 1;
+            return true;
         }
-        entry.0 += 1;
+        self.buckets.insert(key.to_string(), (1, now_ms));
         true
     }
 }
@@ -83,6 +90,9 @@ impl AuthorReplayWindow {
 
     /// Returns `true` when this `(author, message_id)` was already seen recently.
     fn is_duplicate(&mut self, author: &str, message_id: &str) -> bool {
+        if self.by_author.len() > 8192 {
+            self.by_author.clear();
+        }
         let entry = self
             .by_author
             .entry(author.to_string())
@@ -167,7 +177,7 @@ impl IngestGuard {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn allow_gossip(
         &mut self,
         from_peer: &str,

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mycelium Project
 //! Ende-zu-Ende-Verschlüsselung für Mycelium-Nachrichten.
 //!
-//! Direkt: X25519 ECDH → HKDF-SHA256 → ChaCha20-Poly1305  
+//! Direkt: X25519 ECDH → HKDF-SHA256 → ChaCha20-Poly1305
 //! Gruppe: symmetrischer Pre-Shared Key → ChaCha20-Poly1305
 
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -11,7 +11,7 @@ use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 pub use x25519_dalek::PublicKey as X25519PublicKey;
 
@@ -19,33 +19,23 @@ pub use x25519_dalek::PublicKey as X25519PublicKey;
 pub struct EncryptionKeypair {
     pub public: PublicKey,
     secret: StaticSecret,
-    secret_raw: [u8; 32],
 }
 
 impl EncryptionKeypair {
     pub fn generate() -> Self {
         let secret = StaticSecret::random();
-        let secret_raw = secret.to_bytes();
         let public = PublicKey::from(&secret);
-        Self {
-            secret,
-            public,
-            secret_raw,
-        }
+        Self { secret, public }
     }
 
     pub fn secret_bytes(&self) -> [u8; 32] {
-        self.secret_raw
+        self.secret.to_bytes()
     }
 
     pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
         let secret = StaticSecret::from(bytes);
         let public = PublicKey::from(&secret);
-        Self {
-            secret,
-            public,
-            secret_raw: bytes,
-        }
+        Self { secret, public }
     }
 
     pub fn public_hex(&self) -> String {
@@ -57,15 +47,9 @@ impl EncryptionKeypair {
     }
 }
 
-impl Drop for EncryptionKeypair {
-    fn drop(&mut self) {
-        self.secret_raw.zeroize();
-    }
-}
-
 impl Clone for EncryptionKeypair {
     fn clone(&self) -> Self {
-        Self::from_secret_bytes(self.secret_raw)
+        Self::from_secret_bytes(self.secret.to_bytes())
     }
 }
 
@@ -154,8 +138,8 @@ pub fn decrypt_group(blob: &[u8], group_key: &[u8; 32]) -> anyhow::Result<Vec<u8
 
 fn derive_chacha_key(shared_secret: &[u8], info: &[u8]) -> anyhow::Result<Key> {
     let hk = Hkdf::<Sha256>::new(None, shared_secret);
-    let mut raw = [0u8; 32];
-    hk.expand(info, &mut raw)
+    let mut raw = Zeroizing::new([0u8; 32]);
+    hk.expand(info, &mut raw[..])
         .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?;
     key_from_bytes(&raw)
 }
@@ -221,14 +205,6 @@ mod tests {
         let bytes = kp.secret_bytes();
         let restored = EncryptionKeypair::from_secret_bytes(bytes);
         assert_eq!(kp.public.as_bytes(), restored.public.as_bytes());
-    }
-
-    #[test]
-    fn secret_bytes_are_zeroed_after_drop() {
-        let kp = EncryptionKeypair::generate();
-        let public_bytes = *kp.public.as_bytes();
-        drop(kp);
-        let _ = public_bytes;
     }
 
     #[test]

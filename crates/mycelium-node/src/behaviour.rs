@@ -55,14 +55,25 @@ impl MeshBehaviour {
             request_response::Config::default(),
         );
         let identify = identify::Behaviour::new(identify::Config::new(
-            "mycelium/0.1".into(),
+            mycelium_core::bootstrap::IDENTIFY_PROTOCOL.into(),
             local_key.public(),
         ));
 
         let mut kad_config = kad::Config::new(StreamProtocol::new("/mycelium/kad/1.0.0"));
         kad_config.set_query_timeout(Duration::from_secs(60));
-        let kad =
-            kad::Behaviour::with_config(local_peer_id, MemoryStore::new(local_peer_id), kad_config);
+        let kad = kad::Behaviour::with_config(
+            local_peer_id,
+            MemoryStore::with_config(
+                local_peer_id,
+                kad::store::MemoryStoreConfig {
+                    max_records: 256,
+                    max_value_bytes: 4096,
+                    max_provided_keys: 256,
+                    max_providers_per_key: 20,
+                },
+            ),
+            kad_config,
+        );
 
         Self {
             relay,

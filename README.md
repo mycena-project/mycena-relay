@@ -1,8 +1,6 @@
 # Mycelium Relay
 
-> **This GitHub repository is private** and is not a the maintainer public product.
-
-> **Early Beta — expect bugs.** This repository builds and deploys the bootstrap relay used by [Mycelium](https://github.com/mycena-project/Mycelium) clients.
+> **Early Beta — expect bugs.** This public repository builds and deploys the bootstrap relay used by [Mycelium](https://github.com/mycena-project/Mycelium) clients. It is not a second copy of the Mycelium app.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Mycelium Relay CI](https://github.com/mycena-project/mycelium-relay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mycena-project/mycelium-relay/actions/workflows/ci.yml)

@@ -15,7 +15,7 @@
 
 ## What this repo contains
 
-This tree mirrors the Mycelium Rust workspace crates needed to build `mycelium-relay`, synced from the main app repo via `scripts/sync-relay-repo.sh` in Mycelium. Deploy configuration lives under `deploy/relay/`.
+This tree mirrors the Mycelium Rust workspace crates needed to build `mycelium-relay`, synced from the main app repo via `scripts/sync-relay-repo.sh` in Mycelium. Deploy configuration lives under `deploy/vps/` (install target) and `deploy/relay/` (Fly.io).
 
 ## Run locally
 
@@ -25,13 +25,17 @@ cargo run -p mycelium-relay
 
 Health check: `curl -s http://localhost:8080/health`
 
-## Deploy (Fly.io)
+## Deploy (VPS)
 
-See [deploy/relay/README.md](deploy/relay/README.md) and `scripts/deploy-relay-fly.sh`.
+Install target: `relay.example.invalid` on the VPS. See [deploy/vps/README.md](deploy/vps/README.md).
 
-Production config: [deploy/relay/fly.toml](deploy/relay/fly.toml) — libp2p TCP/UDP 4001, HTTP health on 8080, persistent volume for stable peer identity.
+```bash
+bash scripts/deploy-relay-vps.sh
+```
 
-**Production deploy:** push an annotated tag `v*.*.*` — [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) deploys to Fly.io (not on every `main` push).
+That script is the install step. It is not run by CI.
+
+A `v*.*.*` tag still deploys to Fly.io via [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and [deploy/relay/README.md](deploy/relay/README.md). VPS does not replace that workflow until the tag deploy is removed.
 
 ### Run your own relay (AGPL-3.0)
 

@@ -157,7 +157,7 @@ async fn health() -> &'static str {
 }
 
 fn atomic_saturating_sub(a: &AtomicU64) {
-    let _ = a.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+    let _ = a.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
         Some(n.saturating_sub(1))
     });
 }

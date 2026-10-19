@@ -233,6 +233,7 @@ pub enum TransportEvent {
     },
 }
 
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait MeshTransport: Send {
     fn local_peer_id(&self) -> String;
@@ -265,6 +266,7 @@ pub trait MeshTransport: Send {
     fn kad_on_connectivity_changed(&mut self, _mode: ConnectivityMode) {}
 }
 
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait MessageStore: Send + Sync {
     async fn persist(&self, message: &DirectMessage) -> anyhow::Result<()>;

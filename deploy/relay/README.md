@@ -1,6 +1,8 @@
 # Mycelium Relay — Fly.io deployment
 
-Single image definition: **`Dockerfile.relay`** at the **repository root** (workspace build context).  
+The VPS is the install target (`deploy/vps/`). This file is the existing Fly.io path. A version tag still runs it.
+
+Single image definition: **`Dockerfile.relay`** at the **repository root** (workspace build context).
 Fly app config: **`deploy/relay/fly.toml`** (no `[build]` block — deploy script and CI pass `--dockerfile Dockerfile.relay`).
 
 ## One-time setup

@@ -157,7 +157,10 @@ async fn health() -> &'static str {
 }
 
 fn atomic_saturating_sub(a: &AtomicU64) {
-    let _ = a.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+    // fetch_update is deprecated on newer toolchains and try_update is still
+    // unstable on the Rust 1.88 image used to build the relay.
+    #[allow(deprecated)]
+    let _ = a.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
         Some(n.saturating_sub(1))
     });
 }

@@ -75,3 +75,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: **github.com/mycena-pro
 Copyright (C) 2026 Mycena Project.
 
 Licensed under [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
+
+Dependency advisories and why the remaining ones do not affect the relay: see [docs/DEPENDENCY_RISK.md](https://github.com/mycena-project/Mycena/blob/main/docs/DEPENDENCY_RISK.md) in the main repo.

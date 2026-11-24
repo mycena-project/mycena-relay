@@ -84,9 +84,9 @@ fn normalize_relay_origin(raw: &str) -> String {
 pub const STANDARD_BOOTSTRAP_RELAYS: &[StandardBootstrapRelay] = &[
     StandardBootstrapRelay {
         slot: "eu-fly",
-        fixed_peer_id: Some("12D3KooWCVC3ZgY5T4tvBz6kujKzbifbCGnU3kDbvtPnRPfHTogn"),
+        fixed_peer_id: Some("12D3KooWEjWpxescd3inApzVuFEDcMfCFJ5NJy9cYvWLxKxgdJpZ"),
         peer_seed: None,
-        ipv4: "192.0.2.57",
+        ipv4: "168.220.93.128",
         dns4: RELAY_HOSTNAME,
         operator_label: "mycena-core-fly",
         region: "eu-central",
@@ -191,7 +191,7 @@ pub const STANDARD_BOOTSTRAP_RELAYS: &[StandardBootstrapRelay] = &[
 
 /// Legacy alias — operated slot (Fly.io).
 pub const RELAY_IPV4: &str = STANDARD_BOOTSTRAP_RELAYS[0].ipv4;
-pub const RELAY_PEER_ID: &str = "12D3KooWCVC3ZgY5T4tvBz6kujKzbifbCGnU3kDbvtPnRPfHTogn";
+pub const RELAY_PEER_ID: &str = "12D3KooWEjWpxescd3inApzVuFEDcMfCFJ5NJy9cYvWLxKxgdJpZ";
 
 /// Resolve the libp2p PeerId for a bootstrap slot.
 pub fn relay_peer_id(relay: &StandardBootstrapRelay) -> anyhow::Result<String> {

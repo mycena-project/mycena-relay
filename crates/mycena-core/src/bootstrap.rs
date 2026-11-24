@@ -337,7 +337,7 @@ mod tests {
         let addrs = standard_bootstrap_multiaddrs();
         assert!(addrs.len() >= 28, "7 relays × (ip4+dns4) × (tcp+quic)");
         assert!(addrs.iter().any(|a| a.contains("mycena-relay.fly.dev")));
-        assert!(addrs.iter().any(|a| a.contains("192.0.2.57")));
+        assert!(addrs.iter().any(|a| a.contains("168.220.93.128")));
     }
 
     #[test]

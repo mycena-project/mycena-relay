@@ -8,10 +8,16 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+clap = { version = "4", features = ["derive"] }
+mycena-coin = { path = "../mycena-coin" }
 mycena-core = { path = "../mycena-core" }
 mycena-node = { path = "../mycena-node" }
+tempfile = "3"
 tokio.workspace = true
 libp2p.workspace = true
 
+[[bin]]
+name = "mycenalab"
+path = "src/bin/mycenalab.rs"
+
 [dev-dependencies]
-tempfile = "3"

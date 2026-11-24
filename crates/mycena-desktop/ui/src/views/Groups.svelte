@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycena Project
 <script>
+  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // Copyright (C) 2026 Mycena Project
   import { invoke } from "@tauri-apps/api/core";
   let groups = $state([]);
   let selectedId = $state("");

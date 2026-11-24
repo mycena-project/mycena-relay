@@ -17,21 +17,27 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 anyhow.workspace = true
 async-trait.workspace = true
 bincode.workspace = true
 dirs = "5"
-mycena-core = { path = "../mycena-core" }
-mycena-node = { path = "../mycena-node" }
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+mycena-l1-facade = { path = "../mycena-l1-facade" }
 mycena-app = { path = "../mycena-app" }
 mycena-coin = { path = "../mycena-coin" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol"] }
 tauri-plugin-notification = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+once_cell.workspace = true
+uuid.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+blew = "0.3.0"
+tokio-stream = "0.1"

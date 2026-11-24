@@ -11,6 +11,8 @@ concurrency:
 
 jobs:
   analyze:
+    # Code scanning / dependency review need a public repo on the free plan.
+    if: ${{ !github.event.repository.private }}
     name: Analyze
     runs-on: ubuntu-latest
     permissions:

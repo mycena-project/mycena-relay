@@ -1,14 +1,30 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycena Project
 <script>
+  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // Copyright (C) 2026 Mycena Project
   import { onMount } from "svelte";
 
-  let { peerCount = 0 } = $props();
+  let {
+    peerCount = 0,
+    connectivityMode = "internet",
+    internetEnabled = true,
+    rendezvousEnabled = false,
+    connectivityDetail = "",
+  } = $props();
 
   let showConnected = $state(false);
   let showSearching = $state(false);
   let prevPeers = $state(0);
   let searchingTimer;
+
+  const meshOnly = $derived(connectivityMode === "mesh_only");
+  const voluntaryMesh = $derived(meshOnly && !internetEnabled);
+  const modeLabel = $derived(
+    voluntaryMesh
+      ? "Local mesh (internet off)"
+      : meshOnly
+        ? "Local mesh (relay offline)"
+        : "Internet + mesh",
+  );
 
   const SEARCHING_INITIAL_MS = 25_000;
   const SEARCHING_PULSE_MS = 20_000;
@@ -60,10 +76,21 @@
   });
 </script>
 
+<div class="status-bar">
+  <span class="mode-pill" class:mesh={meshOnly}>
+    {modeLabel}
+  </span>
+  {#if connectivityDetail}
+    <span class="mode-detail">{connectivityDetail}</span>
+  {/if}
+</div>
+
 {#if showSearching && peerCount === 0}
   <div class="status-banner searching">
     <span class="spinner"></span>
-    Searching for peers via relay…
+    {meshOnly
+      ? "Searching for peers on your local network…"
+      : "Searching for peers (LAN + relay)…"}
   </div>
 {:else if showConnected}
   <div class="status-banner connected">
@@ -73,6 +100,33 @@
 {/if}
 
 <style>
+  .status-bar {
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-elevated);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .mode-pill {
+    display: inline-block;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--accent-subtle);
+    color: var(--text-secondary);
+    width: fit-content;
+  }
+  .mode-pill.mesh {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .mode-detail {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.35;
+  }
   .status-banner {
     padding: 8px 16px;
     font-size: 12px;

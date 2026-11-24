@@ -4,6 +4,7 @@
 
 use libp2p::identity;
 use mycena_core::crypto::{encrypt_for, EncryptionKeypair};
+use mycena_core::data::Priority;
 use mycena_core::e2e_direct_wrap;
 use mycena_core::transport::{sign_encrypted_direct, verify_encrypted_direct, WireMessage};
 
@@ -16,6 +17,8 @@ fn unsigned_encrypted_direct_fails_verify() {
         mesh_signature: None,
         hop_count: 0,
         max_hops: 8,
+        e2e_version: 0,
+        priority: Priority::Normal,
     };
     let kp = identity::Keypair::generate_ed25519();
     let peer_id = kp.public().to_peer_id();
@@ -28,7 +31,7 @@ fn signed_encrypted_direct_roundtrip() {
     let sender_kp = identity::Keypair::generate_ed25519();
     let sender_id = sender_kp.public().to_peer_id();
     let author = sender_id.to_string();
-    let inner = e2e_direct_wrap::wrap_inner(&author, b"payload").unwrap();
+    let inner = e2e_direct_wrap::wrap_inner(&author, b"payload");
     let encrypted = encrypt_for(&inner, &recipient.public).unwrap();
 
     let mut wire = WireMessage::EncryptedDirect {
@@ -38,6 +41,8 @@ fn signed_encrypted_direct_roundtrip() {
         mesh_signature: None,
         hop_count: 0,
         max_hops: 8,
+        e2e_version: 0,
+        priority: Priority::Normal,
     };
     sign_encrypted_direct(&mut wire, &sender_kp).unwrap();
     assert!(verify_encrypted_direct(&wire, &sender_id));

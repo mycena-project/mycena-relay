@@ -3,6 +3,8 @@
 //! Periodic reachability probe for hybrid Internet / mesh operation.
 
 use mycena_core::transport::ConnectivityMode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
 
@@ -14,24 +16,38 @@ pub struct ConnectivityMonitor {
     pub mode_rx: watch::Receiver<ConnectivityMode>,
 }
 
+/// Effective transport mode: user opt-out wins over relay reachability.
+pub fn effective_connectivity_mode(
+    internet_enabled: bool,
+    probe_reachable: bool,
+) -> ConnectivityMode {
+    if !internet_enabled {
+        return ConnectivityMode::MeshOnly;
+    }
+    if probe_reachable {
+        ConnectivityMode::Internet
+    } else {
+        ConnectivityMode::MeshOnly
+    }
+}
+
 impl ConnectivityMonitor {
-    pub fn new() -> Self {
-        let (mode_tx, mode_rx) = watch::channel(ConnectivityMode::Internet);
-        Self { mode_tx, mode_rx }
+    pub fn new(internet_enabled: bool) -> (Self, Arc<AtomicBool>) {
+        let flag = Arc::new(AtomicBool::new(internet_enabled));
+        let initial = effective_connectivity_mode(internet_enabled, true);
+        let (mode_tx, mode_rx) = watch::channel(initial);
+        (Self { mode_tx, mode_rx }, flag)
     }
 
     /// Background task: probe TCP reachability every 15s and update [`ConnectivityMode`].
-    pub fn spawn_monitor(tx: watch::Sender<ConnectivityMode>) {
+    pub fn spawn_monitor(tx: watch::Sender<ConnectivityMode>, internet_enabled: Arc<AtomicBool>) {
         tokio::spawn(async move {
             let mut current = *tx.borrow();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                 let reachable = check_internet_connectivity().await;
-                let new_mode = if reachable {
-                    ConnectivityMode::Internet
-                } else {
-                    ConnectivityMode::MeshOnly
-                };
+                let enabled = internet_enabled.load(Ordering::Relaxed);
+                let new_mode = effective_connectivity_mode(enabled, reachable);
                 if new_mode != current {
                     info!("connectivity changed: {:?} → {:?}", current, new_mode);
                     current = new_mode;
@@ -44,7 +60,38 @@ impl ConnectivityMonitor {
 
 impl Default for ConnectivityMonitor {
     fn default() -> Self {
-        Self::new()
+        Self::new(true).0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn opt_out_forces_mesh_only() {
+        assert_eq!(
+            effective_connectivity_mode(false, true),
+            ConnectivityMode::MeshOnly
+        );
+        assert_eq!(
+            effective_connectivity_mode(false, false),
+            ConnectivityMode::MeshOnly
+        );
+    }
+
+    #[test]
+    fn probe_decides_when_internet_enabled() {
+        assert_eq!(
+            effective_connectivity_mode(true, true),
+            ConnectivityMode::Internet
+        );
+        assert_eq!(
+            effective_connectivity_mode(true, false),
+            ConnectivityMode::MeshOnly
+        );
     }
 }
 

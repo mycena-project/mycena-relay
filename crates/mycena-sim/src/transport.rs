@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Mycena Project
 use crate::scheduler::LinkProfile;
 use async_trait::async_trait;
+use mycena_core::lock_or_recover;
 use mycena_core::transport::{MeshTransport, ScopeId, TransportEvent, WireMessage};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -27,6 +28,7 @@ pub struct SimTransport {
     links: Arc<Mutex<HashMap<(String, String), LinkProfile>>>,
     event_rx: mpsc::UnboundedReceiver<TransportEvent>,
     action_tx: mpsc::UnboundedSender<SimAction>,
+    subscribed_scopes: HashSet<String>,
 }
 
 impl SimTransport {
@@ -43,7 +45,12 @@ impl SimTransport {
             links,
             event_rx,
             action_tx,
+            subscribed_scopes: HashSet::new(),
         }
+    }
+
+    pub fn subscribed_scopes(&self) -> &HashSet<String> {
+        &self.subscribed_scopes
     }
 }
 
@@ -54,7 +61,8 @@ impl MeshTransport for SimTransport {
     }
 
     fn known_peers(&self) -> Vec<String> {
-        let links = self.links.lock().expect("links lock poisoned");
+        // POISON-RECOVER: read-only link lookup for simulated send routing.
+        let links = lock_or_recover!(self.links, "sim links");
         links
             .keys()
             .filter_map(|(a, b)| {
@@ -99,11 +107,13 @@ impl MeshTransport for SimTransport {
         Ok(())
     }
 
-    async fn subscribe_scope(&mut self, _scope: ScopeId) -> anyhow::Result<()> {
+    async fn subscribe_scope(&mut self, scope: ScopeId) -> anyhow::Result<()> {
+        self.subscribed_scopes.insert(scope);
         Ok(())
     }
 
-    async fn unsubscribe_scope(&mut self, _scope: ScopeId) -> anyhow::Result<()> {
+    async fn unsubscribe_scope(&mut self, scope: ScopeId) -> anyhow::Result<()> {
+        self.subscribed_scopes.remove(&scope);
         Ok(())
     }
 
@@ -112,5 +122,38 @@ impl MeshTransport for SimTransport {
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("sim transport event channel closed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::scheduler::LinkProfile;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn sim_transport_links_survive_mutex_poison() {
+        let links = Arc::new(Mutex::new(HashMap::new()));
+        let links2 = Arc::clone(&links);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            lock_or_recover!(links2, "sim links")
+                .insert(("local".into(), "remote".into()), LinkProfile::default());
+            panic!("deliberate sim transport links poison");
+        }));
+        let (action_tx, _action_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let transport = SimTransport::new(
+            "local".into(),
+            None,
+            Arc::clone(&links),
+            event_rx,
+            action_tx,
+        );
+        lock_or_recover!(links, "sim links")
+            .insert(("local".into(), "remote".into()), LinkProfile::default());
+        assert_eq!(transport.known_peers(), vec!["remote".to_string()]);
     }
 }

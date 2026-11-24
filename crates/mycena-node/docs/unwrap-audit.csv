@@ -1,0 +1,50 @@
+priority,file,line,in_test,context,snippet,action
+P0,crates/mycena-core/src/ble_mesh.rs,52,否,peer_input_BLE_frame,"decode_frame(bytes) -> anyhow::Result (no unwrap in prod)",already_safe
+P0,crates/mycena-core/src/ble_mesh.rs,105,否,peer_input_BLE_chunk,"push_chunk(chunk) -> anyhow::Result (no unwrap in prod)",already_safe
+P0,crates/mycena-core/src/ble_stream.rs,22,否,peer_input_BLE_stream,"decode_stream_frame(bytes) -> anyhow::Result",already_safe
+P0,crates/mycena-core/src/contact_hello.rs,59,否,peer_input_contact_hello,"ContactHello::decode -> anyhow::Result",already_safe
+P0,crates/mycena-core/src/invite.rs,87,否,peer_input_QR_invite,"parse_invite(raw) -> Option (no panic on bad input)",already_safe
+P0,crates/mycena-core/src/crypto/mod.rs,74,否,peer_input_crypto,"parse_x25519_public_hex / decrypt_* -> anyhow::Result",already_safe
+P0,crates/mycena-core/src/data.rs,90,否,peer_input_envelope,"Envelope::verify -> bool (no unwrap)",already_safe
+P0,crates/mycena-node/src/node.rs,985,否,peer_input_BLE_frame,"decode_frame(&frame)? in IngestBleFrame",already_safe
+P0,crates/mycena-node/src/node.rs,1480,否,peer_input_gossip,"bincode::deserialize(...).unwrap_or(false)",already_safe
+P0,crates/mycena-node/src/security.rs,26,否,peer_input_envelope,"validate_data_message_signature -> Result",already_safe
+P0,crates/mycena-node/src/ingest_guard.rs,136,否,peer_input_ingest,"allow_direct / check_gossip_* -> Result",already_safe
+P0,crates/mycena-coin/src/node.rs,100,否,peer_input_coin,"handle_incoming -> anyhow::Result; rejects invalid tx",already_safe
+P0,crates/mycena-coin/src/payload.rs,8,否,peer_input_coin,"CoinPayload serde; deserialize at host boundary uses ?",already_safe
+P2,crates/mycena-node/src/node.rs,93,否,local_state_startup,".expect(""default listen addr must parse"")",invariant_comment_done
+P2,crates/mycena-node/src/node.rs,120,否,local_state_startup,".expect(""default listen addr must parse"")",invariant_comment_done
+P2,crates/mycena-node/src/node.rs,225,否,local_state_mutex,"lock_or_recover!(self.keypair, ""relay keypair"")",poison_recover_done
+P2,crates/mycena-node/src/node.rs,233,否,local_state_mutex,"lock_or_recover!(self.created_at, ""relay created_at"")",poison_recover_done
+P2,crates/mycena-node/src/node.rs,241,否,local_state_mutex,"lock_or_recover!(self.keypair) assign",poison_recover_done
+P2,crates/mycena-node/src/node.rs,243,否,local_state_mutex,"lock_or_recover!(self.created_at) assign",poison_recover_done
+P2,crates/mycena-node/src/node.rs,250,否,local_state_mutex,"lock_or_recover!(self.keypair).clone()",poison_recover_done
+P2,crates/mycena-node/src/node.rs,993,否,local_state_mutex,"lock_or_recover!(relay_identity.created_at)",poison_recover_done
+P2,crates/mycena-node/src/node.rs,1544,否,local_state_mutex,"lock_or_recover!(self.local_prekeys)",poison_recover_done
+P2,crates/mycena-node/src/node.rs,3141,否,local_state_mutex,"lock_or_recover!(self.local_prekeys)",poison_recover_done
+P2,crates/mycena-node/src/node.rs,3206,否,local_state_mutex,"lock_or_recover!(self.local_prekeys) mut",poison_recover_done
+P2,crates/mycena-node/src/peer_trust.rs,237,否,local_state_mutex,"lock_or_recover!(self.cache) clone",poison_recover_done
+P2,crates/mycena-node/src/peer_trust.rs,251,否,local_state_mutex,"lock_or_recover!(self.cache) mut",poison_recover_done
+P2,crates/mycena-node/src/peer_trust.rs,264,否,local_state_mutex,"lock_or_recover!(self.cache) read",poison_recover_done
+P2,crates/mycena-node/src/peer_trust.rs,271,否,local_state_mutex,"lock_or_recover!(self.cache) throttle",poison_recover_done
+P2,crates/mycena-node/src/secrets.rs,17,否,local_state_mutex,"lock_or_recover(locks, ""account load lock map"")",poison_recover_done
+P2,crates/mycena-node/src/secrets.rs,106,否,local_state_mutex,"lock_or_recover!(lock, ""account load mutex"")",poison_recover_done
+P2,crates/mycena-node/src/encounter_log.rs,59,否,local_state_mutex,"lock_or_recover!(self.open)",poison_recover_done
+P2,crates/mycena-node/src/encounter_log.rs,71,否,local_state_mutex,"lock_or_recover!(self.open)",poison_recover_done
+P2,crates/mycena-node/src/forwarding.rs,259,是,test_mem_store,"lock_or_recover!(self.inner) persist",poison_recover_done
+P2,crates/mycena-node/src/forwarding.rs,264,是,test_mem_store,"lock_or_recover!(self.inner) recent",poison_recover_done
+P2,crates/mycena-coin/src/user_trust.rs,93,否,local_state_mutex,"lock_or_recover(m, ""user trust cache"")",poison_recover_done
+P2,crates/mycena-coin/src/user_trust.rs,100,否,local_state_mutex,"lock_or_recover(m, ""endorse cache"")",poison_recover_done
+P2,crates/mycena-ffi/src/lib.rs,591,否,local_state_mutex,"lock_or_recover!(CALLBACK)",poison_recover_done
+P2,crates/mycena-ffi/src/lib.rs,929,否,local_state_mutex,"lock_or_recover!(NODE)",poison_recover_done
+P2,crates/mycena-miniapp/src/bridge_session.rs,28,否,local_state_mutex,"lock_or_recover!(SESSIONS)",poison_recover_done
+P2,crates/mycena-app/src/bridge_host.rs,36,否,local_state_mutex,"lock_or_recover!(BROADCAST_LIMITS)",poison_recover_done
+P2,crates/mycena-core/src/lock_recover.rs,12,否,lock_recover_infra,"lock_or_recover / lock_or_recover! macro",poison_recover_done
+P2,crates/mycena-node/src/behaviour.rs,57,否,local_state_startup,"gossipsub ConfigBuilder.build().expect(...)",invariant_comment_done
+P2,crates/mycena-node/src/behaviour.rs,62,否,local_state_startup,"gossipsub::Behaviour::new(...).expect(...)",invariant_comment_done
+P2,crates/mycena-node/src/behaviour.rs,65,否,local_state_startup,"mdns::Behaviour::new(...).expect(...)",invariant_comment_done
+P2,crates/mycena-core/src/relay_pool.rs,72,否,local_state_hash,"try_into().expect(""8 bytes"") on blake3 output",invariant_comment_done
+P2,crates/mycena-core/src/rendezvous_dial.rs,73,否,local_state_hash,"try_into().expect(""4 bytes"") on blake3 output",invariant_comment_done
+P2,crates/mycena-coin/src/hot_wallet.rs,60,否,local_state_config,"if let Some(cold_addr) = config.cold_wallet_address.clone()",already_safe
+P2,crates/mycena-core/src/ble_mesh.rs,131,否,local_state_reassembly,"part.unwrap_or_default() after all parts verified Some",invariant_comment_done
+P2,crates/mycena-core/src/crypto/ratchet.rs,329,否,local_state_hash,"try_into().expect(""32"") on hkdf_64 output",invariant_comment_done

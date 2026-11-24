@@ -11,11 +11,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Gesamter Workspace wird gebraucht (relay hängt von mycena-core + mycena-node ab)
-COPY Cargo.toml Cargo.lock ./
+# The whole workspace is needed (the relay depends on mycena-core + mycena-node),
+# including the patched gossipsub fork under third-party/.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ ./crates/
+COPY third-party/ ./third-party/
 
-# Nur das Relay-Binary bauen
+# Build only the relay binary
 RUN cargo build --release -p mycena-relay
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycena Project
+use mycena_l0_facade::data::now_ms;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -66,13 +67,13 @@ impl PresenceSignal {
             ephemeral_id: Uuid::new_v4(),
             enc_pubkey_hex,
             profile,
-            created_at_ms: mycena_core::data::now_ms(),
+            created_at_ms: now_ms(),
             ttl_secs,
         }
     }
 
     pub fn is_expired(&self) -> bool {
-        let age_ms = mycena_core::data::now_ms().saturating_sub(self.created_at_ms);
+        let age_ms = now_ms().saturating_sub(self.created_at_ms);
         age_ms > self.ttl_secs as u64 * 1000
     }
 
@@ -99,13 +100,13 @@ impl ProximityMatchIntent {
     pub fn new(from_enc_pubkey_hex: String) -> Self {
         Self {
             from_enc_pubkey_hex,
-            created_at_ms: mycena_core::data::now_ms(),
+            created_at_ms: now_ms(),
             ttl_secs: 300,
         }
     }
 
     pub fn is_expired(&self) -> bool {
-        let age_ms = mycena_core::data::now_ms().saturating_sub(self.created_at_ms);
+        let age_ms = now_ms().saturating_sub(self.created_at_ms);
         age_ms > self.ttl_secs as u64 * 1000
     }
 

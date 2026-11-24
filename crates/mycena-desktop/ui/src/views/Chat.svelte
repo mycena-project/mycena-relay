@@ -1,8 +1,15 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycena Project
 <script>
+  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // Copyright (C) 2026 Mycena Project
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { onMount, tick } from "svelte";
+
+  import {
+    contactPeerId,
+    sanitizeUserError,
+    userVisibleContactName,
+  } from "../lib/contactDisplay.js";
 
   let { peerId } = $props();
   let selectedPeer = $state("");
@@ -13,6 +20,9 @@
   let isEncrypted = $state(false);
   let errorMsg = $state("");
   let locationLoading = $state(false);
+  let peerReputation = $state(null);
+  let pendingCustody = $state([]);
+  let meshOnly = $state(false);
   let showLocationPrivacy = $state(false);
   let locationPrivacyAck = $state(
     typeof localStorage !== "undefined" &&
@@ -39,9 +49,82 @@
     return { lat, lon };
   }
 
+  function contactDisplayName(c) {
+    return userVisibleContactName(c, "Unknown contact");
+  }
+
   async function refreshContacts() {
-    acceptedContacts = await invoke("list_accepted_contacts");
-    pendingContacts = await invoke("list_pending_contacts");
+    errorMsg = "";
+    try {
+      acceptedContacts = await invoke("list_accepted_contacts");
+      if (!Array.isArray(acceptedContacts)) {
+        acceptedContacts = [];
+      }
+    } catch {
+      errorMsg = sanitizeUserError(null);
+      acceptedContacts = [];
+    }
+    try {
+      pendingContacts = await invoke("list_pending_contacts");
+    } catch {
+      pendingContacts = [];
+    }
+    if (!selectedPeer && acceptedContacts.length > 0) {
+      selectedPeer = contactPeerId(acceptedContacts[0]);
+    }
+  }
+
+  function msToMinutes(ms) {
+    return Math.max(1, Math.round(ms / 60000));
+  }
+
+  function custodyMessageText(status) {
+    const carriers = status.expected?.active_carrier_count ?? 0;
+    const noCarriers =
+      carriers === 0 || status.expected?.basis === "NoCarriersNearby";
+    if (noCarriers) {
+      return "Stored locally · will deliver when someone is nearby";
+    }
+    const minMin = msToMinutes(status.expected.eta_min_ms);
+    const maxMin = msToMinutes(status.expected.eta_max_ms);
+    const carrierText =
+      carriers === 1
+        ? "1 possible carrier nearby"
+        : `${carriers} possible carriers nearby`;
+    return `Stored locally · expected delivery: ${minMin}–${maxMin} min · ${carrierText}`;
+  }
+
+  function custodyForMessage(msg) {
+    if (!msg.is_mine || !meshOnly) return null;
+    return (
+      pendingCustody.find(
+        (entry) =>
+          entry.app_chat_id === msg.id ||
+          (!entry.app_chat_id &&
+            entry.chat_body === msg.body &&
+            Math.abs(Number(entry.enqueued_at_ms) - Number(msg.timestamp_ms)) <=
+              120_000),
+      ) ?? null
+    );
+  }
+
+  function formatTime(timestampMs) {
+    if (!timestampMs) return "";
+    return new Date(timestampMs).toLocaleString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  let messagesEl = $state(null);
+
+  async function scrollMessagesToBottom() {
+    await tick();
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
   }
 
   async function refresh() {
@@ -49,8 +132,31 @@
     if (selectedPeer) {
       messages = await invoke("chat_history", { peerId: selectedPeer, limit: 100 });
       isEncrypted = await invoke("peer_has_enc_key", { peerId: selectedPeer });
+      try {
+        peerReputation = await invoke("get_peer_reputation", { peerId: selectedPeer });
+      } catch {
+        peerReputation = null;
+      }
+      try {
+        const allPending = await invoke("list_pending_custody");
+        pendingCustody = Array.isArray(allPending)
+          ? allPending.filter((e) => e.dest_peer === selectedPeer)
+          : [];
+      } catch {
+        pendingCustody = [];
+      }
+      try {
+        const mode = await invoke("get_connectivity_mode");
+        meshOnly = mode === "mesh_only";
+      } catch {
+        meshOnly = false;
+      }
+      await scrollMessagesToBottom();
     } else {
       isEncrypted = false;
+      peerReputation = null;
+      pendingCustody = [];
+      meshOnly = false;
     }
   }
 
@@ -66,6 +172,13 @@
     await refresh();
   }
 
+  async function blockPeer() {
+    if (!selectedPeer) return;
+    await invoke("block_contact", { peerId: selectedPeer });
+    selectedPeer = "";
+    await refresh();
+  }
+
   async function sendBody(body) {
     if (!selectedPeer || !body.trim()) return;
     errorMsg = "";
@@ -77,8 +190,17 @@
       if (msg.includes("enc_key_not_yet_exchanged")) {
         errorMsg =
           "Key exchange pending — message not sent. Try again shortly.";
+      } else if (
+        !meshOnly &&
+        (msg.includes("peer_not_connected") ||
+          msg.includes("not connected to peer"))
+      ) {
+        errorMsg =
+          "Not connected yet — wait a moment after scanning QR, then try again.";
+      } else if (!meshOnly) {
+        errorMsg = sanitizeUserError(msg);
       } else {
-        errorMsg = msg;
+        await refresh();
       }
     }
   }
@@ -136,13 +258,12 @@
     window.open(url, "_blank");
   }
 
-  $effect(() => {
+  onMount(() => {
     refresh();
     const unsubs = [];
     (async () => {
       unsubs.push(await listen("chat-updated", refresh));
       unsubs.push(await listen("contacts-updated", refresh));
-      unsubs.push(await listen("metrics-updated", refreshContacts));
     })();
     return () => unsubs.forEach((u) => u?.());
   });
@@ -173,12 +294,12 @@
       <p class="section-label">Contact requests</p>
       {#each pendingContacts as c}
         <div class="pending-row">
-          <span class="pending-name">{c.display_name || c.peer_id.slice(0, 16)}</span>
+          <span class="pending-name">{contactDisplayName(c)}</span>
           <div class="pending-actions">
-            <button type="button" class="small" onclick={() => acceptContact(c.peer_id)}>
+            <button type="button" class="small" onclick={() => acceptContact(contactPeerId(c))}>
               Accept
             </button>
-            <button type="button" class="small secondary" onclick={() => rejectContact(c.peer_id)}>
+            <button type="button" class="small secondary" onclick={() => rejectContact(contactPeerId(c))}>
               Decline
             </button>
           </div>
@@ -187,14 +308,14 @@
     {/if}
     <p class="section-label">Contacts</p>
     {#if acceptedContacts.length === 0}
-      <p class="empty-hint">No contacts yet. Connect a device on the Connect tab (scan QR or paste invite).</p>
+      <p class="empty-hint">No contacts yet. Connect a device on the Connect tab by scanning a QR code.</p>
     {/if}
-    {#each acceptedContacts as c}
+    {#each acceptedContacts as c (contactPeerId(c))}
       <button
-        onclick={() => ((selectedPeer = c.peer_id), refresh())}
-        class:active={selectedPeer === c.peer_id}
+        onclick={() => ((selectedPeer = contactPeerId(c)), refresh())}
+        class:active={selectedPeer === contactPeerId(c)}
       >
-        {c.display_name || c.peer_id.slice(0, 16) + "…"}
+        {contactDisplayName(c)}
       </button>
     {/each}
   </div>
@@ -204,22 +325,37 @@
         ? "🔒 End-to-end encrypted"
         : "⚠ Not encrypted – peer key not yet exchanged"}
     </div>
+    {#if selectedPeer && peerReputation}
+      <div class="reputation-bar">
+        <span>Mesh reputation: {peerReputation.strikes} strike{peerReputation.strikes === 1 ? "" : "s"}</span>
+        <button type="button" class="small secondary" onclick={blockPeer}>Block contact</button>
+      </div>
+    {/if}
     {#if errorMsg}
       <div class="error-banner">{errorMsg}</div>
     {/if}
-    <div class="messages">
+    <div class="messages" bind:this={messagesEl}>
       {#each messages as msg}
-        <div class="msg" class:own={msg.from_peer === peerId}>
-          <span class="name">{msg.from_display_name}</span>
-          <span class="body">{msg.body}</span>
-          {#if msg.body.startsWith("📍")}
-            {@const coords = extractCoordinates(msg.body)}
-            {#if coords}
-              <button type="button" class="maps-link" onclick={() => openMaps(msg.body)}>
-                Open in Maps
-              </button>
+        {@const custody = custodyForMessage(msg)}
+        <div class="msg-row" class:own={msg.is_mine}>
+          <div class="msg">
+            {#if !msg.is_mine}
+              <span class="name">{msg.from_display_name}</span>
             {/if}
-          {/if}
+            <span class="body">{msg.body}</span>
+            <span class="time">{formatTime(msg.timestamp_ms)}</span>
+            {#if custody}
+              <span class="custody-status">{custodyMessageText(custody)}</span>
+            {/if}
+            {#if msg.body.startsWith("📍")}
+              {@const coords = extractCoordinates(msg.body)}
+              {#if coords}
+                <button type="button" class="maps-link" onclick={() => openMaps(msg.body)}>
+                  Open in Maps
+                </button>
+              {/if}
+            {/if}
+          </div>
         </div>
       {/each}
     </div>
@@ -254,6 +390,8 @@
     border-right: 1px solid var(--border);
     overflow-y: auto;
     padding: 8px;
+    background: var(--sidebar-bg);
+    color: var(--text);
   }
   .section-label {
     font-size: 11px;
@@ -277,6 +415,7 @@
     display: block;
     font-size: 13px;
     margin-bottom: 4px;
+    color: var(--text);
   }
   .pending-actions {
     display: flex;
@@ -292,23 +431,31 @@
     background: none;
     cursor: pointer;
     font-size: 13px;
+    color: var(--text);
+  }
+  .sidebar button:hover {
+    background: var(--surface);
   }
   .sidebar button.active {
     background: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 500;
   }
   button.small {
     padding: 4px 8px;
     font-size: 12px;
   }
   button.secondary {
-    background: none;
-    color: inherit;
+    background: var(--surface);
+    color: var(--text);
     border: 1px solid var(--border);
   }
   .conversation {
     flex: 1;
     display: flex;
     flex-direction: column;
+    background: var(--bg);
+    min-width: 0;
   }
   .enc-badge {
     font-size: 12px;
@@ -321,6 +468,16 @@
     background: var(--accent-subtle);
     color: var(--text);
   }
+  .reputation-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+  }
   .error-banner {
     font-size: 12px;
     padding: 8px 10px;
@@ -328,29 +485,67 @@
     color: #c0392b;
     border-bottom: 1px solid var(--border);
   }
+  .custody-status {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.35;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: rgba(52, 120, 190, 0.14);
+    color: #2c5282;
+  }
+  .msg-row.own .custody-status {
+    background: rgba(52, 120, 190, 0.18);
+    color: #1e4f7a;
+  }
   .messages {
     flex: 1;
     overflow-y: auto;
     padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
+  }
+  .msg-row {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .msg-row.own {
+    justify-content: flex-end;
   }
   .msg {
-    max-width: 70%;
-    padding: 8px 12px;
-    border-radius: 10px;
-    background: var(--border);
+    max-width: min(75%, 420px);
+    padding: 10px 14px;
+    border-radius: 16px;
+    background: var(--msg-in);
+    color: var(--text);
   }
-  .msg.own {
-    align-self: flex-end;
-    background: var(--accent-subtle);
+  .msg-row.own .msg {
+    background: var(--msg-out);
+    border-bottom-right-radius: 4px;
+  }
+  .msg-row:not(.own) .msg {
+    border-bottom-left-radius: 4px;
   }
   .name {
     font-size: 11px;
     color: var(--text-muted);
     display: block;
-    margin-bottom: 2px;
+    margin-bottom: 4px;
+  }
+  .body {
+    font-size: 14px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .time {
+    display: block;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: right;
   }
   .maps-link {
     margin-top: 4px;
@@ -373,7 +568,8 @@
     padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: none;
+    background: var(--surface);
+    color: var(--text);
     cursor: pointer;
     font-size: 16px;
   }
@@ -386,14 +582,14 @@
     padding: 8px 12px;
     border-radius: 6px;
     border: 1px solid var(--border);
-    background: none;
-    color: inherit;
+    background: var(--surface);
+    color: var(--text);
     font-size: 14px;
   }
   button {
     padding: 8px 16px;
     background: var(--accent);
-    color: white;
+    color: #fff;
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -413,12 +609,13 @@
     z-index: 100;
   }
   .modal {
-    background: var(--sidebar-bg);
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 20px;
     max-width: 400px;
     margin: 16px;
+    color: var(--text);
   }
   .modal h3 {
     margin: 0 0 8px;
@@ -436,8 +633,8 @@
     justify-content: flex-end;
   }
   .modal-actions .secondary {
-    background: none;
-    color: inherit;
+    background: var(--surface);
+    color: var(--text);
     border: 1px solid var(--border);
   }
 </style>

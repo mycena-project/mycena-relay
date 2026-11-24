@@ -20,6 +20,16 @@ pub const DIRECT_RATE_PER_MINUTE: u32 = 120;
 /// Scoped gossip publishes per relay peer per minute (SD-032).
 pub const GOSSIP_RATE_PER_MINUTE: u32 = 60;
 
+/// Emergency SOS posts per author per minute (Phase C3 / E3).
+pub const SOS_RATE_PER_MINUTE: u32 = 6;
+
+/// Aggregate SOS posts per geohash cell per minute (Phase E3 anti-spam).
+pub const SOS_GEOHASH_RATE_PER_MINUTE: u32 = 24;
+
+pub fn is_sos_scope(scope: &str) -> bool {
+    scope.starts_with("mycena/sos/v1")
+}
+
 const RATE_WINDOW_MS: u64 = 60 * 1000;
 
 /// Per-author id window retained after global seen-cache eviction (SD-060).
@@ -56,21 +66,18 @@ impl FixedWindowRateLimiter {
     }
 
     fn allow(&mut self, key: &str, now_ms: u64) -> bool {
-        if self.buckets.len() > 4096 {
-            self.buckets
-                .retain(|_, (_, start)| now_ms.saturating_sub(*start) < self.window_ms);
+        self.allow_with_limit(key, now_ms, self.limit)
+    }
+
+    fn allow_with_limit(&mut self, key: &str, now_ms: u64, limit: u32) -> bool {
+        let entry = self.buckets.entry(key.to_string()).or_insert((0, now_ms));
+        if now_ms.saturating_sub(entry.1) >= self.window_ms {
+            *entry = (0, now_ms);
         }
-        if let Some(entry) = self.buckets.get_mut(key) {
-            if now_ms.saturating_sub(entry.1) >= self.window_ms {
-                *entry = (0, now_ms);
-            }
-            if entry.0 >= self.limit {
-                return false;
-            }
-            entry.0 += 1;
-            return true;
+        if entry.0 >= limit {
+            return false;
         }
-        self.buckets.insert(key.to_string(), (1, now_ms));
+        entry.0 += 1;
         true
     }
 }
@@ -90,9 +97,6 @@ impl AuthorReplayWindow {
 
     /// Returns `true` when this `(author, message_id)` was already seen recently.
     fn is_duplicate(&mut self, author: &str, message_id: &str) -> bool {
-        if self.by_author.len() > 8192 {
-            self.by_author.clear();
-        }
         let entry = self
             .by_author
             .entry(author.to_string())
@@ -114,6 +118,8 @@ impl AuthorReplayWindow {
 pub struct IngestGuard {
     rate_direct: FixedWindowRateLimiter,
     rate_gossip: FixedWindowRateLimiter,
+    rate_sos: FixedWindowRateLimiter,
+    rate_sos_geohash: FixedWindowRateLimiter,
     replay: AuthorReplayWindow,
 }
 
@@ -122,6 +128,11 @@ impl IngestGuard {
         Self {
             rate_direct: FixedWindowRateLimiter::new(DIRECT_RATE_PER_MINUTE, RATE_WINDOW_MS),
             rate_gossip: FixedWindowRateLimiter::new(GOSSIP_RATE_PER_MINUTE, RATE_WINDOW_MS),
+            rate_sos: FixedWindowRateLimiter::new(SOS_RATE_PER_MINUTE, RATE_WINDOW_MS),
+            rate_sos_geohash: FixedWindowRateLimiter::new(
+                SOS_GEOHASH_RATE_PER_MINUTE,
+                RATE_WINDOW_MS,
+            ),
             replay: AuthorReplayWindow::new(AUTHOR_ID_WINDOW),
         }
     }
@@ -160,6 +171,39 @@ impl IngestGuard {
         Ok(())
     }
 
+    /// Stricter rate limit for emergency SOS scope (Phase C3 / E3).
+    pub fn check_sos_gossip(
+        &mut self,
+        from_peer: &str,
+        geohash: Option<&str>,
+        now_ms: u64,
+    ) -> Result<(), IngestReject> {
+        self.check_sos_gossip_with_limit(from_peer, geohash, SOS_RATE_PER_MINUTE, now_ms)
+    }
+
+    /// SOS gossip with caller-selected per-relay cap (reputation-tiered ingest).
+    pub fn check_sos_gossip_with_limit(
+        &mut self,
+        from_peer: &str,
+        geohash: Option<&str>,
+        peer_limit: u32,
+        now_ms: u64,
+    ) -> Result<(), IngestReject> {
+        if !self
+            .rate_sos
+            .allow_with_limit(from_peer, now_ms, peer_limit)
+        {
+            return Err(IngestReject::RateLimit);
+        }
+        if let Some(gh) = geohash.map(str::trim).filter(|s| !s.is_empty()) {
+            let key = format!("geo:{gh}");
+            if !self.rate_sos_geohash.allow(&key, now_ms) {
+                return Err(IngestReject::RateLimit);
+            }
+        }
+        Ok(())
+    }
+
     /// Freshness + per-author id window for scoped gossip (SD-060).
     pub fn check_gossip_message(
         &mut self,
@@ -176,19 +220,6 @@ impl IngestGuard {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub fn allow_gossip(
-        &mut self,
-        from_peer: &str,
-        payload_len: usize,
-        message_id: &str,
-        created_at_ms: u64,
-        now_ms: u64,
-    ) -> Result<(), IngestReject> {
-        self.check_gossip_payload(from_peer, payload_len, now_ms)?;
-        self.check_gossip_message(from_peer, message_id, created_at_ms, now_ms)
-    }
 }
 
 impl Default for IngestGuard {
@@ -199,6 +230,8 @@ impl Default for IngestGuard {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use mycena_core::data::Envelope;
 
@@ -245,8 +278,47 @@ mod tests {
         let mut guard = IngestGuard::new();
         let now = 5_000_000u64;
         assert_eq!(
-            guard.allow_gossip("peer", MAX_GOSSIP_PAYLOAD_BYTES + 1, "id1", now, now),
+            guard.check_gossip_payload("peer", MAX_GOSSIP_PAYLOAD_BYTES + 1, now),
             Err(IngestReject::Oversize)
+        );
+    }
+
+    #[test]
+    fn sos_geohash_rate_limit_trips() {
+        let mut guard = IngestGuard::new();
+        let now = 5_000_000u64;
+        for i in 0..SOS_GEOHASH_RATE_PER_MINUTE {
+            assert!(
+                guard
+                    .check_sos_gossip(&format!("peer-{i}"), Some("u4pru"), now)
+                    .is_ok(),
+                "i={i}"
+            );
+        }
+        assert_eq!(
+            guard.check_sos_gossip("peer-extra", Some("u4pru"), now),
+            Err(IngestReject::RateLimit)
+        );
+        assert!(guard
+            .check_sos_gossip("peer-other", Some("u4pruyd"), now)
+            .is_ok());
+    }
+
+    #[test]
+    fn sos_spam_soak_one_author_blocked() {
+        let mut guard = IngestGuard::new();
+        let now = 5_000_000u64;
+        for i in 0..SOS_RATE_PER_MINUTE {
+            assert!(
+                guard
+                    .check_sos_gossip("peer-spam", Some("u4pru"), now)
+                    .is_ok(),
+                "i={i}"
+            );
+        }
+        assert_eq!(
+            guard.check_sos_gossip("peer-spam", Some("u4pru"), now),
+            Err(IngestReject::RateLimit)
         );
     }
 

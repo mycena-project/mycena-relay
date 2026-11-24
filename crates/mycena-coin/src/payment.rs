@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mycena Project
 //! QR-friendly payment URI (`mxcpay:`) for MeshCoin transfers.
 
-use mycena_core::data::now_ms;
+use mycena_l0_facade::data::now_ms;
 use serde::{Deserialize, Serialize};
 
 /// Payment request encoded as `mxcpay:{address}?amount={muon}&memo=…&expires=…`.
@@ -32,7 +32,7 @@ impl PaymentRequest {
             uri.push_str(&format!("&memo={}", urlencoding::encode(memo)));
         }
         if let Some(exp) = self.expires_at_ms {
-            uri.push_str(&format!("&expires={}", exp));
+            uri.push_str(&format!("&expires={exp}"));
         }
         uri
     }

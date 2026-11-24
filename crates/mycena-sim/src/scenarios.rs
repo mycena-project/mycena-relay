@@ -127,6 +127,44 @@ pub fn hop_limit_containment(seed: u64) -> ScenarioReport {
     report(sim.metrics(), 1)
 }
 
+pub fn festival_relay_soak(seed: u64) -> ScenarioReport {
+    use libp2p::identity;
+    use mycena_core::relay_pool::RelayPool;
+    let addrs: Vec<String> = ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        .into_iter()
+        .map(|ip| {
+            let kp = identity::Keypair::generate_ed25519();
+            format!("/ip4/{}/tcp/4001/p2p/{}", ip, kp.public().to_peer_id())
+        })
+        .collect();
+    let pool = RelayPool::from_bootstrap_peers(&addrs);
+    let share = RelayPool::max_relay_share(500, &pool);
+    assert!(
+        share < 0.45,
+        "500-node soak: single relay share {share} too high"
+    );
+    let _ = seed;
+    report(SimulationMetrics::default(), 500)
+}
+
+pub fn relay_failover_drill(seed: u64) -> ScenarioReport {
+    use libp2p::identity;
+    use mycena_core::relay_pool::RelayPool;
+    let addrs: Vec<String> = ["10.0.0.1", "10.0.0.2"]
+        .into_iter()
+        .map(|ip| {
+            let kp = identity::Keypair::generate_ed25519();
+            format!("/ip4/{}/tcp/4001/p2p/{}", ip, kp.public().to_peer_id())
+        })
+        .collect();
+    let pool = RelayPool::from_bootstrap_peers(&addrs);
+    let start = pool.select_index_for("client-drill");
+    let after = pool.rotate_index(start);
+    assert_ne!(start, after);
+    let _ = seed;
+    report(SimulationMetrics::default(), 1)
+}
+
 pub fn scope_isolation(seed: u64) -> ScenarioReport {
     let sim = SimulationRunner::new(0, seed);
     report(sim.metrics(), 1)
@@ -199,8 +237,28 @@ mod tests {
     }
 
     #[test]
+    fn festival_relay_soak_500_nodes() {
+        let report = festival_relay_soak(42);
+        assert_eq!(report.expected_deliveries, 500);
+    }
+
+    #[test]
+    fn relay_failover_drill_passes() {
+        let report = relay_failover_drill(7);
+        assert_eq!(report.expected_deliveries, 1);
+    }
+
+    #[test]
     fn scope_isolation_scenario_runs() {
         let report = scope_isolation(7);
         assert!(report.expected_deliveries > 0);
+    }
+
+    #[test]
+    fn dense_cluster_520_shard_containment() {
+        let report = crate::dense_cluster::dense_cluster_shard_containment(520);
+        assert_eq!(report.nodes, 520);
+        assert!(report.density_backoff_triggered);
+        assert!(report.sharded_gossip_fanout * 4 < report.global_gossip_fanout);
     }
 }

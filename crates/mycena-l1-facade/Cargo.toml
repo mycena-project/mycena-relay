@@ -1,0 +1,11 @@
+[package]
+name = "mycena-l1-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "L1 facade: stable messaging/sync/payments API over mycena-node for app-layer crates"
+
+[dependencies]
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+mycena-node = { path = "../mycena-node" }

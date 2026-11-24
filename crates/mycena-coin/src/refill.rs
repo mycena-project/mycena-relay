@@ -30,7 +30,7 @@ impl RefillRequest {
     ) -> anyhow::Result<Self> {
         let hot_address = crate::address::address_from_keypair(hot_keypair);
         let hot_public_key = hot_keypair.public().encode_protobuf();
-        let created_at_ms = mycena_core::data::now_ms();
+        let created_at_ms = mycena_l0_facade::data::now_ms();
         let expires_at_ms = created_at_ms.saturating_add(REFILL_REQUEST_TTL_MS);
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut req = Self {

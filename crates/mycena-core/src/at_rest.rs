@@ -3,14 +3,16 @@
 //! Encrypt sensitive key material at rest (identity Ed25519, X25519 enc key).
 //!
 //! Master key resolution (first match):
-//! 1. Explicit `storage_key` (32 bytes) — Android passes a key from Keystore-backed prefs.
+//! 1. Explicit `storage_key` (32 bytes) — Android host passes key from EncryptedSharedPreferences
+//!    (Keystore-backed MasterKey for prefs only; StrongBox requested when available).
 //! 2. OS keyring entry scoped per `db_path`.
-//! 3. Random per-device file-based key (fallback; weaker than keyring, not path-derived).
+//! 3. Existing file-fallback key (legacy installs only). New installs refuse a weak file master
+//!    if the OS keyring is unavailable (SD-131).
 
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use rand::RngCore;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 const SERVICE: &str = "io.github.mycena_project";
@@ -43,7 +45,12 @@ impl SecretVault {
         storage_key: Option<[u8; KEY_LEN]>,
     ) -> anyhow::Result<Self> {
         let vault = Self::open(db_path, storage_key)?;
-        for name in ["enc_x25519", "enc_keypair", "ed25519_identity"] {
+        for name in [
+            "account_ed25519",
+            "enc_x25519",
+            "enc_keypair",
+            "ed25519_identity",
+        ] {
             let path = vault.secrets_dir.join(format!("{name}.enc"));
             if !path.exists() {
                 continue;
@@ -51,16 +58,12 @@ impl SecretVault {
             match vault.read_secret(name) {
                 Ok(Some(_)) => {}
                 Ok(None) => {}
-                Err(e) if name == "ed25519_identity" => {
-                    return Err(anyhow::anyhow!(
-                        "unreadable identity at {path:?}: {e}; refusing to delete or mint a new Peer ID"
-                    ));
-                }
                 Err(e) => {
                     tracing::warn!(
-                        "unreadable at-rest secret {name} at {:?}: {e} (leaving file in place)",
+                        "dropping unreadable at-rest secret {name} at {:?}: {e}",
                         path
                     );
+                    let _ = vault.delete_secret(name);
                 }
             }
         }
@@ -96,6 +99,7 @@ impl SecretVault {
                             "recovered at-rest secret {name} with alternate master key; re-encrypting"
                         );
                         self.write_secret(name, &plaintext)?;
+                        delete_file_fallback_key(&self.db_path);
                         return Ok(Some(plaintext));
                     }
                 }
@@ -140,6 +144,58 @@ impl SecretVault {
     pub fn secrets_dir(&self) -> &Path {
         &self.secrets_dir
     }
+}
+
+/// True when `db_path` looks like a Mycena node data directory (not `/`, `$HOME`, etc.).
+pub fn looks_like_mycena_db(db_path: &Path) -> bool {
+    if db_path.join(".secrets").is_dir()
+        || db_path.join("identity").exists()
+        || db_path.join("app").exists()
+        || db_path.join("coin").exists()
+        || db_path.join("miniapp").exists()
+    {
+        return true;
+    }
+    db_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("mycena"))
+}
+
+/// Reject path traversal, filesystem roots, and directories that are not Mycena DBs.
+pub fn validate_wipe_target(db_path: &Path) -> anyhow::Result<()> {
+    if db_path.as_os_str().is_empty() {
+        anyhow::bail!("empty db path");
+    }
+    if db_path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        anyhow::bail!("refusing wipe path containing '..'");
+    }
+    if db_path == Path::new("/") || db_path == Path::new("\\") {
+        anyhow::bail!("refusing to wipe filesystem root");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = Path::new(&home);
+        if db_path == home_path {
+            anyhow::bail!("refusing to wipe home directory");
+        }
+    }
+    if db_path.exists() && db_path.is_dir() && !looks_like_mycena_db(db_path) {
+        anyhow::bail!("refusing to wipe directory that is not a Mycena node database");
+    }
+    Ok(())
+}
+
+/// Secure-delete a Mycena node directory after [`validate_wipe_target`].
+pub fn wipe_node_directory(db_path: &Path) -> anyhow::Result<()> {
+    validate_wipe_target(db_path)?;
+    if db_path.exists() {
+        std::fs::remove_dir_all(db_path)?;
+    }
+    clear_keyring_master(&db_path.to_string_lossy());
+    Ok(())
 }
 
 /// Remove the macOS Keychain / platform keyring master key for this data directory.
@@ -195,19 +251,41 @@ fn keyring_account(db_path: &str) -> String {
 fn load_master_from_keyring(db_path: &str) -> anyhow::Result<[u8; KEY_LEN]> {
     let entry = keyring::Entry::new(SERVICE, &keyring_account(db_path))?;
     match entry.get_password() {
-        Ok(hex) => {
-            let bytes = hex::decode(hex.trim())?;
-            bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("invalid keyring master key length"))
-        }
+        Ok(hex) => parse_master_key_hex(&hex),
         Err(keyring::Error::NoEntry) => {
             let mut key = [0u8; KEY_LEN];
             rand::thread_rng().fill_bytes(&mut key);
-            entry.set_password(&hex::encode(key))?;
-            Ok(key)
+            let hex = hex::encode(key);
+            match entry.set_password(&hex) {
+                Ok(()) => {
+                    delete_file_fallback_key(db_path);
+                    Ok(key)
+                }
+                Err(_) => match entry.get_password() {
+                    Ok(existing) => parse_master_key_hex(&existing),
+                    Err(e) => Err(e.into()),
+                },
+            }
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+fn parse_master_key_hex(hex: &str) -> anyhow::Result<[u8; KEY_LEN]> {
+    let bytes = hex::decode(hex.trim())?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid keyring master key length"))
+}
+
+fn delete_file_fallback_key(db_path: &str) {
+    let key_path = Path::new(db_path)
+        .join(".secrets")
+        .join("fallback_master.key");
+    if key_path.exists() {
+        if let Err(e) = std::fs::remove_file(&key_path) {
+            tracing::warn!("could not remove leftover fallback_master.key at {key_path:?}: {e}");
+        }
     }
 }
 
@@ -271,14 +349,13 @@ fn legacy_derive_fallback_master(db_path: &str) -> [u8; KEY_LEN] {
 
 fn encrypt(master: &[u8; KEY_LEN], plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(master.into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce: Nonce = nonce_bytes.into();
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(&nonce, plaintext)
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
         .map_err(|e| anyhow::anyhow!("encrypt failed: {e}"))?;
     let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
-    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
     Ok(out)
 }
@@ -287,19 +364,17 @@ fn decrypt(master: &[u8; KEY_LEN], blob: &[u8]) -> anyhow::Result<Vec<u8>> {
     if blob.len() < NONCE_LEN + 16 {
         anyhow::bail!("ciphertext too short");
     }
-    let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
-    let arr: [u8; 12] = nonce_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("invalid nonce length"))?;
-    let nonce: Nonce = arr.into();
+    let (nonce, ct) = blob.split_at(NONCE_LEN);
     let cipher = ChaCha20Poly1305::new(master.into());
     cipher
-        .decrypt(&nonce, ct)
+        .decrypt(Nonce::from_slice(nonce), ct)
         .map_err(|e| anyhow::anyhow!("decrypt failed: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
@@ -418,7 +493,18 @@ mod tests {
             SecretVault::open_with_migration(db_path.to_str().unwrap(), Some(master)).unwrap();
         vault.write_secret("identity", b"x").unwrap();
         assert!(vault.secrets_dir().exists());
-        std::fs::remove_dir_all(db_path).unwrap();
+        wipe_node_directory(db_path).unwrap();
         assert!(!db_path.exists());
+    }
+
+    #[test]
+    fn wipe_rejects_parent_dir_and_non_db() {
+        assert!(validate_wipe_target(Path::new("../etc")).is_err());
+        assert!(validate_wipe_target(Path::new("/")).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("unrelated.txt"), b"no").unwrap();
+        assert!(validate_wipe_target(dir.path()).is_err());
+        let missing = dir.path().join("never-created-mycena-node");
+        assert!(validate_wipe_target(&missing).is_ok());
     }
 }

@@ -1,8 +1,11 @@
 [workspace]
 members = [
   "crates/mycena-core",
+  "crates/mycena-l0-facade",
+  "crates/mycena-l1-facade",
   "crates/mycena-node",
   "crates/mycena-app",
+  "crates/mycena-miniapp",
   "crates/mycena-coin",
   "crates/mycena-ffi",
   "crates/mycena-cli",
@@ -11,6 +14,7 @@ members = [
   "crates/mycena-relay",
   "crates/miniapp-sdk",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -31,6 +35,7 @@ libp2p = { version = "0.56", features = [
   "tokio",
   "tcp",
   "quic",
+  "dns",
   "noise",
   "yamux",
   "mdns",
@@ -45,6 +50,7 @@ libp2p = { version = "0.56", features = [
   "kad",
 ] }
 serde = { version = "1", features = ["derive"] }
+serde_cbor = "0.11"
 serde_json = "1"
 sled = "0.34"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time", "net"] }
@@ -55,12 +61,17 @@ chrono = { version = "0.4", features = ["serde"] }
 bs58 = "0.5"
 tempfile = "3"
 urlencoding = "2"
-zip = "0.6"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 once_cell = "1"
-chacha20poly1305 = "0.11"
+wasmtime = { version = "36.0.18", default-features = false, features = ["cranelift", "std", "runtime"] }
+toml = "0.8.23"
+chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
 rand = "0.8"
 rand_core = "0.6"
 zeroize = "1"
+
+[patch.crates-io]
+libp2p-gossipsub = { path = "third-party/libp2p-gossipsub" }

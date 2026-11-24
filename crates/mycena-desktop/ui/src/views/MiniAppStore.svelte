@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycena Project
 <script>
+  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // Copyright (C) 2026 Mycena Project
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
 
@@ -11,6 +11,8 @@
   let message = $state("");
   let pendingInstall = $state(null);
   let allowDowngrade = $state(false);
+  let installingId = $state("");
+  let showAdvanced = $state(false);
   let revokeAppId = $state("");
   let revokeReason = $state("malware");
 
@@ -21,10 +23,19 @@
     sideload_only: "Sideload only",
   };
 
+  function appId(row) {
+    return row?.manifest?.id ?? "";
+  }
+
+  function isInstalled(id) {
+    return installed.some((app) => app.id === id);
+  }
+
   async function refresh() {
     try {
       installed = await invoke("miniapp_list_installed");
       listings = await invoke("miniapp_browse_store");
+      message = "";
     } catch (e) {
       message = String(e);
     }
@@ -54,6 +65,20 @@
       return pendingInstall.preview.manifest.id;
     }
     return null;
+  }
+
+  async function installOfficialListing(appId) {
+    if (!appId || installingId) return;
+    installingId = appId;
+    try {
+      await invoke("miniapp_install_official", { appId });
+      message = `Installed ${appId}`;
+      await refresh();
+    } catch (e) {
+      message = String(e);
+    } finally {
+      installingId = "";
+    }
   }
 
   async function confirmPendingInstall() {
@@ -112,14 +137,101 @@
 </script>
 
 <div class="store">
-  <h3>Mini apps</h3>
-  <label class="file">
-    Install bundle (.mxa / .zip)
-    <input type="file" accept=".zip,.mxa,application/zip" onchange={installFromFile} />
-  </label>
+  <header class="hero">
+    <h3>Mini apps</h3>
+    <p class="lead">Official apps bundled with Mycena. Tap Install, then Open.</p>
+  </header>
+
   {#if message}
-    <p class="msg">{message}</p>
+    <p class="msg" role="status">{message}</p>
   {/if}
+
+  <section class="catalog">
+    <h4>Available apps</h4>
+    {#if listings.length === 0}
+      <p class="muted">No apps in the local catalog yet. Restart the node or sideload a bundle below.</p>
+    {:else}
+      <div class="cards">
+        {#each listings as row (appId(row) + row.bundle_hash)}
+          {@const id = appId(row)}
+          {@const installedApp = isInstalled(id)}
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <span class="title">{row.manifest.name}</span>
+                <span class="meta">v{row.manifest.version}</span>
+              </div>
+              {#if row.signature_valid}
+                <span class="badge ok">Signed</span>
+              {/if}
+            </div>
+            {#if row.manifest.description}
+              <p class="desc">{row.manifest.description}</p>
+            {/if}
+            <span class="meta mono">{id}</span>
+            <div class="actions">
+              {#if installedApp}
+                <button type="button" class="primary" onclick={() => onOpenApp(id)}>Open</button>
+                <button type="button" class="danger" onclick={() => uninstall(id)}>Remove</button>
+              {:else}
+                <button
+                  type="button"
+                  class="primary install"
+                  disabled={installingId === id}
+                  onclick={() => installOfficialListing(id)}
+                >
+                  {installingId === id ? "Installing…" : "Install"}
+                </button>
+              {/if}
+            </div>
+          </article>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <section>
+    <h4>Installed</h4>
+    {#if installed.length === 0}
+      <p class="muted">Nothing installed yet — pick an app above.</p>
+    {:else}
+      <ul>
+        {#each installed as app (app.id)}
+          <li>
+            <span class="title">{app.name}</span>
+            <span class="meta">{app.id} · v{app.version}</span>
+            <div class="actions">
+              <button type="button" class="primary" onclick={() => onOpenApp(app.id)}>Open</button>
+              <button type="button" class="danger" onclick={() => uninstall(app.id)}>Remove</button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section class="advanced">
+    <button type="button" class="toggle-advanced" onclick={() => (showAdvanced = !showAdvanced)}>
+      {showAdvanced ? "Hide" : "Show"} advanced options
+    </button>
+    {#if showAdvanced}
+      <label class="file">
+        Install bundle from file (.mxa / .zip)
+        <input type="file" accept=".zip,.mxa,application/zip" onchange={installFromFile} />
+      </label>
+      <div class="curator">
+        <h4>Curator — publish revocation</h4>
+        <p class="muted">
+          Signs with this node&apos;s identity and gossips on <code>mycena/appstore/revocations/v1</code>.
+        </p>
+        <div class="row">
+          <input type="text" placeholder="com.example.badapp" bind:value={revokeAppId} aria-label="App id" />
+          <input type="text" placeholder="reason" bind:value={revokeReason} aria-label="Reason" />
+          <button type="button" class="danger" onclick={publishRevocation}>Revoke</button>
+        </div>
+      </div>
+    {/if}
+  </section>
 
   {#if pendingInstall}
     <div class="modal" role="dialog" aria-labelledby="install-review-title">
@@ -139,34 +251,17 @@
         {#if pendingInstall.preview.has_inline_script}
           <p class="warn">This app uses inline scripts (higher XSS risk).</p>
         {/if}
-        {#if pendingInstall.preview.reproducible_attested}
-          <p class="ok-line">Reproducible build attested (content hash matches manifest).</p>
-        {/if}
-        {#if pendingInstall.preview.strict_csp_eligible}
-          <p class="ok-line">Strict CSP eligible (no inline scripts).</p>
-        {/if}
-        {#if pendingInstall.preview.manifest.permissions?.length}
-          <p class="meta">Permissions:</p>
-          <ul class="perms">
-            {#each pendingInstall.preview.manifest.permissions as perm}
-              <li>{perm}</li>
-            {/each}
-          </ul>
-        {/if}
         {#if pendingInstall.preview.is_downgrade && pendingInstall.preview.installed_version}
-          <p class="warn">
-            Downgrade: v{pendingInstall.preview.installed_version} → v{pendingInstall.preview.manifest.version}.
-            Check the box below to allow.
-          </p>
           <label class="row downgrade">
             <input type="checkbox" bind:checked={allowDowngrade} />
             Allow version downgrade
           </label>
         {/if}
-        <p class="warn">Only install apps you trust. Malicious mini-apps can abuse granted permissions.</p>
+        <p class="warn">Only install apps you trust.</p>
         <div class="row">
           <button
             type="button"
+            class="primary"
             disabled={
               pendingInstall.preview.trust_level === "hash_mismatch" ||
               (pendingInstall.preview.is_downgrade && !allowDowngrade)
@@ -180,82 +275,69 @@
       </div>
     </div>
   {/if}
-
-  <section>
-    <h4>Installed</h4>
-    {#if installed.length === 0}
-      <p class="muted">None yet.</p>
-    {:else}
-      <ul>
-        {#each installed as app (app.id)}
-          <li>
-            <span class="title">{app.name}</span>
-            <span class="meta">{app.id} · v{app.version}</span>
-            <div class="row">
-              <button type="button" onclick={() => onOpenApp(app.id)}>Open</button>
-              <button type="button" class="danger" onclick={() => uninstall(app.id)}>Remove</button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
-  <section class="curator">
-    <h4>Curator — publish revocation</h4>
-    <p class="muted">
-      Signs with this node&apos;s identity and gossips on <code>mycena/appstore/revocations/v1</code>.
-      Use only if you operate a store curator key.
-    </p>
-    <div class="row">
-      <input
-        type="text"
-        placeholder="com.example.badapp"
-        bind:value={revokeAppId}
-        aria-label="App id to revoke"
-      />
-      <input
-        type="text"
-        placeholder="reason"
-        bind:value={revokeReason}
-        aria-label="Revocation reason"
-      />
-      <button type="button" class="danger" onclick={publishRevocation}>Revoke &amp; gossip</button>
-    </div>
-  </section>
-
-  <section>
-    <h4>Catalog (cached listings)</h4>
-    {#if listings.length === 0}
-      <p class="muted">No listings on this node.</p>
-    {:else}
-      <ul>
-        {#each listings as row (row.manifest.id + row.bundle_hash)}
-          <li>
-            <span class="title">{row.manifest.name}</span>
-            <span class="meta">{row.manifest.id}</span>
-            <span class="meta hash">{row.bundle_hash.slice(0, 16)}…</span>
-            {#if row.signature_valid}
-              <span class="ok">Signed listing</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
 </div>
 
 <style>
   .store {
-    padding: 16px;
+    padding: 16px 20px 32px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
     height: 100%;
     overflow: auto;
   }
-  h3,
-  h4 {
+  .hero h3 {
+    margin: 0 0 4px;
+  }
+  .lead {
     margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  h4 {
+    margin: 0 0 10px;
+  }
+  .catalog {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    background: var(--surface-elevated, var(--bg));
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg);
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.ok {
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+  .desc {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary, var(--text-muted));
+    line-height: 1.4;
   }
   .file {
     display: inline-block;
@@ -264,6 +346,7 @@
     border: 1px solid var(--border);
     cursor: pointer;
     font-size: 14px;
+    margin-top: 8px;
   }
   .file input {
     display: none;
@@ -271,6 +354,10 @@
   .msg {
     color: #b45309;
     font-size: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #fef3c7;
+    margin: 0;
   }
   .modal {
     position: fixed;
@@ -297,22 +384,16 @@
   .ok {
     color: #15803d;
     font-size: 12px;
-    display: block;
-  }
-  .perms {
-    margin: 4px 0 0;
-    padding-left: 18px;
-    font-size: 12px;
   }
   section {
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 12px;
+    padding: 12px 16px;
   }
   ul {
     list-style: none;
     padding: 0;
-    margin: 8px 0 0;
+    margin: 0;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -334,12 +415,59 @@
     color: var(--text-muted);
     display: block;
   }
-  .hash {
+  .mono {
     font-family: ui-monospace, monospace;
+    word-break: break-all;
   }
-  .ok-line {
-    color: #166534;
-    font-size: 13px;
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    background: var(--surface-elevated, #eee);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  button.primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  button.primary.install {
+    min-width: 100px;
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  button.danger {
+    background: #c45c5c;
+    color: #fff;
+  }
+  button.muted-btn {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .toggle-advanced {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .advanced {
+    border-style: dashed;
+  }
+  .curator {
+    margin-top: 12px;
   }
   .row {
     display: flex;
@@ -353,27 +481,6 @@
     min-width: 140px;
     padding: 6px 8px;
     font-size: 13px;
-  }
-  button {
-    padding: 6px 12px;
-    border: none;
-    border-radius: 6px;
-    background: var(--accent);
-    color: #fff;
-    cursor: pointer;
-    font-size: 13px;
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  button.danger {
-    background: #c45c5c;
-  }
-  button.muted-btn {
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--border);
   }
   .muted {
     color: var(--text-muted);

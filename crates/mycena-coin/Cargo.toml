@@ -11,8 +11,8 @@ bincode.workspace = true
 blake3.workspace = true
 bs58.workspace = true
 libp2p.workspace = true
-mycena-core = { path = "../mycena-core" }
-mycena-node = { path = "../mycena-node" }
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+mycena-l1-facade = { path = "../mycena-l1-facade" }
 serde.workspace = true
 sled.workspace = true
 tokio.workspace = true

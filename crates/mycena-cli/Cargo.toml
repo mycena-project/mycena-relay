@@ -7,10 +7,12 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
-mycena-core = { path = "../mycena-core" }
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+mycena-l1-facade = { path = "../mycena-l1-facade" }
 mycena-app = { path = "../mycena-app" }
-mycena-node = { path = "../mycena-node" }
+mycena-coin = { path = "../mycena-coin" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

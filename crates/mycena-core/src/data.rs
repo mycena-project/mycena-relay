@@ -40,6 +40,21 @@ pub struct Envelope {
     /// Original author when `from_peer` was replaced by a relay hop identity.
     #[serde(default)]
     pub author_peer: Option<String>,
+    /// E2E crypto protocol: 0 = static X25519 (legacy), 1 = Double Ratchet.
+    #[serde(default)]
+    pub e2e_version: u8,
+    /// DTN store-and-forward — use custody queue instead of live epidemic fanout.
+    #[serde(default)]
+    pub custody: bool,
+    /// Spray-and-wait copies already dispatched network-wide.
+    #[serde(default)]
+    pub custody_spray_sent: u8,
+    /// Max active custody copies allowed in the mesh for this message.
+    #[serde(default = "default_max_custody_spray")]
+    pub max_custody_spray: u8,
+    /// Previous custody holder — avoids immediate ping-pong on handoff.
+    #[serde(default)]
+    pub last_custody_from: Option<String>,
 }
 
 impl Envelope {
@@ -61,19 +76,64 @@ impl Envelope {
             hop_count: 0,
             max_hops: default_max_hops(),
             author_peer: None,
+            e2e_version: 0,
+            custody: false,
+            custody_spray_sent: 0,
+            max_custody_spray: default_max_custody_spray(),
+            last_custody_from: None,
         }
     }
 
-    /// Gossip/relay envelope: content id is stable (no clock) so redelivery dedups.
+    /// Directed DTN message with spray-and-wait custody (disaster / city carry).
+    pub fn new_custody(from_peer: String, to_peer: String, payload: Vec<u8>) -> Self {
+        let mut e = Self::new(from_peer, Some(to_peer), payload);
+        e.custody = true;
+        e.max_hops = default_custody_max_hops();
+        e.ttl_secs = 48 * 60 * 60;
+        e
+    }
+
+    /// Like [`Self::new`] but records which E2E wire protocol decrypted the payload.
+    pub fn new_with_e2e_version(
+        from_peer: String,
+        to_peer: Option<String>,
+        payload: Vec<u8>,
+        e2e_version: u8,
+    ) -> Self {
+        let mut e = Self::new(from_peer, to_peer, payload);
+        e.e2e_version = e2e_version;
+        e
+    }
+
+    /// Envelope without a mesh signature (gossip relay; author auth lives in payload).
+    ///
+    /// `ContentId` is `blake3(scope || 0xFF || from_peer || payload)` — no wall clock —
+    /// so redelivery after restart dedups. `created_at_ms` prefers a JSON `created_at_ms`
+    /// field when present so ingest freshness is not vacuous.
     pub fn new_unsigned(from_peer: String, to_peer: Option<String>, payload: Vec<u8>) -> Self {
-        let mut digest_input = from_peer.as_bytes().to_vec();
+        Self::new_unsigned_gossip(from_peer, to_peer, payload, "")
+    }
+
+    /// Like [`Self::new_unsigned`] with a gossip scope mixed into the content id.
+    pub fn new_unsigned_gossip(
+        from_peer: String,
+        to_peer: Option<String>,
+        payload: Vec<u8>,
+        scope: &str,
+    ) -> Self {
+        let created_at_ms = created_at_from_payload(&payload).unwrap_or_else(now_ms);
+        let mut digest_input =
+            Vec::with_capacity(scope.len() + from_peer.len() + payload.len() + 1);
+        digest_input.extend_from_slice(scope.as_bytes());
+        digest_input.push(0xFF);
+        digest_input.extend_from_slice(from_peer.as_bytes());
         digest_input.extend_from_slice(&payload);
         Self {
             id: ContentId::from_bytes(&digest_input),
             from_peer,
             to_peer,
             payload,
-            created_at_ms: now_ms(),
+            created_at_ms,
             ttl_secs: 7 * 24 * 60 * 60,
             priority: Priority::Normal,
             signature: None,
@@ -81,6 +141,11 @@ impl Envelope {
             hop_count: 0,
             max_hops: default_max_hops(),
             author_peer: None,
+            e2e_version: 0,
+            custody: false,
+            custody_spray_sent: 0,
+            max_custody_spray: default_max_custody_spray(),
+            last_custody_from: None,
         }
     }
 
@@ -118,6 +183,11 @@ impl Envelope {
         self.author_peer.as_deref().unwrap_or(&self.from_peer)
     }
 
+    /// Verify mesh signature. The v1 transition window (May 2026) has expired.
+    pub fn verify_or_transition(&self, from_peer_id: &libp2p::PeerId) -> bool {
+        self.verify(from_peer_id)
+    }
+
     fn bytes_for_signing(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(self.id.0.as_bytes());
@@ -131,6 +201,10 @@ impl Envelope {
         bytes.push(self.priority as u8);
         bytes.push(self.hop_count);
         bytes.push(self.max_hops);
+        bytes.push(self.e2e_version);
+        bytes.push(u8::from(self.custody));
+        bytes.push(self.custody_spray_sent);
+        bytes.push(self.max_custody_spray);
         bytes
     }
 
@@ -150,6 +224,22 @@ impl Envelope {
     }
 }
 
+fn default_max_custody_spray() -> u8 {
+    3
+}
+
+fn default_custody_max_hops() -> u8 {
+    CUSTODY_DEFAULT_MAX_HOPS
+}
+
+/// Default hop budget for DTN custody messages (disaster profile).
+pub const CUSTODY_DEFAULT_MAX_HOPS: u8 = 64;
+
+fn created_at_from_payload(payload: &[u8]) -> Option<u64> {
+    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    v.get("created_at_ms").and_then(|x| x.as_u64())
+}
+
 fn default_max_hops() -> u8 {
     8
 }
@@ -163,6 +253,8 @@ pub fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
@@ -185,11 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_id_is_stable_across_calls() {
-        let a = Envelope::new_unsigned("from".into(), None, b"same".to_vec());
-        let b = Envelope::new_unsigned("from".into(), None, b"same".to_vec());
+    fn unsigned_gossip_id_is_stable_across_time() {
+        let payload = br#"{"created_at_ms":1700000000000,"message":"hi"}"#;
+        let a =
+            Envelope::new_unsigned_gossip("peer-a".into(), None, payload.to_vec(), "mycena/sos/v1");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b =
+            Envelope::new_unsigned_gossip("peer-a".into(), None, payload.to_vec(), "mycena/sos/v1");
         assert_eq!(a.id, b.id);
-        let c = Envelope::new_unsigned("from".into(), None, b"other".to_vec());
-        assert_ne!(a.id, c.id);
+        assert_eq!(a.created_at_ms, 1_700_000_000_000);
+        let other_scope =
+            Envelope::new_unsigned_gossip("peer-a".into(), None, payload.to_vec(), "mycena/chat");
+        assert_ne!(a.id, other_scope.id);
     }
 }

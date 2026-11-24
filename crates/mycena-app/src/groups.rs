@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycena Project
+use mycena_l0_facade::crdt::GroupDocument;
+use mycena_l0_facade::data::now_ms;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +12,8 @@ pub struct Group {
     pub key: [u8; 32],
     pub members: Vec<String>,
     pub created_at_ms: u64,
+    #[serde(default)]
+    pub crdt: Option<GroupDocument>,
 }
 
 impl Group {
@@ -22,7 +26,8 @@ impl Group {
             name,
             key,
             members: Vec::new(),
-            created_at_ms: mycena_core::data::now_ms(),
+            created_at_ms: now_ms(),
+            crdt: None,
         }
     }
 
@@ -52,8 +57,32 @@ impl Group {
             name: v["name"].as_str().unwrap_or("Group").to_string(),
             key,
             members: Vec::new(),
-            created_at_ms: mycena_core::data::now_ms(),
+            created_at_ms: now_ms(),
+            crdt: None,
         })
+    }
+
+    pub fn ensure_crdt(&mut self, actor_id: &str) {
+        if self.crdt.is_some() {
+            return;
+        }
+        self.crdt = Some(GroupDocument::bootstrap_legacy(
+            self.id.clone(),
+            self.name.clone(),
+            self.key,
+            self.members.clone(),
+            self.created_at_ms,
+            actor_id,
+        ));
+    }
+
+    pub fn sync_from_crdt(&mut self) {
+        let Some(doc) = &self.crdt else {
+            return;
+        };
+        self.name = doc.materialized_name().to_string();
+        self.members = doc.materialized_members();
+        self.created_at_ms = doc.materialized_created_at_ms();
     }
 
     pub fn record_peer_seen(&mut self, peer_id: String) {
@@ -64,9 +93,18 @@ impl Group {
             self.members.push(peer_id);
         }
     }
+
+    pub fn record_peer_seen_crdt(&mut self, peer_id: String, actor_id: &str) {
+        self.ensure_crdt(actor_id);
+        if let Some(doc) = self.crdt.as_mut() {
+            doc.add_member(peer_id);
+        }
+        self.sync_from_crdt();
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -86,5 +124,14 @@ mod tests {
         g.record_peer_seen("peer-b".into());
         g.record_peer_seen("peer-a".into());
         assert_eq!(g.members, vec!["peer-a".to_string(), "peer-b".to_string()]);
+    }
+
+    #[test]
+    fn group_or_set_membership_via_crdt() {
+        let mut g = Group::new("G".into());
+        g.record_peer_seen_crdt("peer-a".into(), "local");
+        g.record_peer_seen_crdt("peer-b".into(), "local");
+        g.record_peer_seen_crdt("peer-a".into(), "local");
+        assert_eq!(g.members.len(), 2);
     }
 }

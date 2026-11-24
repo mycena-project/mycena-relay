@@ -46,23 +46,25 @@ impl HotWallet {
     }
 
     pub async fn maybe_refill(&self) -> anyhow::Result<RefillResult> {
-        let (confirmed, _pending) = self.coin_node.balance()?;
+        let (confirmed, _pending) = {
+            let view = self.coin_node.balance_settled()?;
+            (view.spendable_muon(), 0u64)
+        };
         let (cold_addr, to_request) = {
             let config = self.config.read().await;
-            if config.cold_wallet_address.is_none() {
+            let Some(cold_addr) = config.cold_wallet_address.clone() else {
                 return Ok(RefillResult::NoColdWallet);
-            }
+            };
             if confirmed >= config.refill_threshold_muon {
                 return Ok(RefillResult::NotNeeded {
                     current_muon: confirmed,
                 });
             }
-            let cold_addr = config.cold_wallet_address.clone().unwrap();
             let to_request = config.refill_amount_muon.saturating_sub(confirmed);
             (cold_addr, to_request)
         };
 
-        let hot_kp = mycena_node::load_or_create_keypair(&self.identity_path)?;
+        let hot_kp = mycena_l1_facade::load_or_create_keypair(&self.identity_path)?;
         let req = RefillRequest::new_signed(&hot_kp, cold_addr.clone(), to_request, 1000)?;
         self.coin_node
             .broadcast_coin_payload(CoinPayload::RefillRequest(req.clone()))
@@ -82,7 +84,7 @@ impl HotWallet {
     }
 
     pub async fn enforce_cap(&self) -> anyhow::Result<()> {
-        let (confirmed, _) = self.coin_node.balance()?;
+        let confirmed = self.coin_node.balance_settled()?.spendable_muon();
         let maybe_return = {
             let config = self.config.read().await;
             if confirmed > config.max_cache_muon {

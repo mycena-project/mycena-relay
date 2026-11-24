@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use libp2p::identity::Keypair;
-use mycena_app::miniapp::bundle_signature::{self, BundleSignatureFile, BUNDLE_SIG_FILE};
-use mycena_app::miniapp::manifest::MiniAppManifest;
-use mycena_app::miniapp::reproducible_build::{content_attestation_hash, digest_file_hex};
-use mycena_app::miniapp::store::{AppSource, AppStoreListing};
-use mycena_app::miniapp::{scan_bundle, MiniAppBundle, ReproducibleBuild};
+use mycena_miniapp::bundle_signature::{self, BundleSignatureFile, BUNDLE_SIG_FILE};
+use mycena_miniapp::manifest::MiniAppManifest;
+use mycena_miniapp::reproducible_build::{content_attestation_hash, digest_file_hex};
+use mycena_miniapp::store::{AppSource, AppStoreListing};
+use mycena_miniapp::{scan_bundle, MiniAppBundle, ReproducibleBuild};
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
             path,
             identity,
             output,
-        } => sign_bundle(&path, &identity, output.as_ref()),
+        } => sign_bundle(&path, &identity, output.as_deref()),
         Command::PackSign {
             dir,
             output,
@@ -112,7 +112,7 @@ fn main() -> anyhow::Result<()> {
             path,
             identity,
             output,
-        } => emit_listing(&path, &identity, output.as_ref()),
+        } => emit_listing(&path, &identity, output.as_deref()),
         Command::Listings {
             dir,
             identity,
@@ -133,15 +133,17 @@ fn lint_bundle(path: &Path) -> anyhow::Result<()> {
     if bundle.total_size() > 10 * 1024 * 1024 {
         anyhow::bail!("bundle exceeds 10 MB limit");
     }
-    if bundle.manifest.runtime != "webview" {
+    if bundle.manifest.runtime != "webview" && bundle.manifest.runtime != "wasm" {
         anyhow::bail!(
-            "unsupported runtime {:?} (only webview is supported)",
+            "unsupported runtime {:?} (use webview or wasm)",
             bundle.manifest.runtime
         );
     }
-    bundle
-        .entry_html()
-        .context("entry HTML must be valid UTF-8")?;
+    if bundle.manifest.runtime == "webview" {
+        bundle
+            .entry_html()
+            .context("entry HTML must be valid UTF-8")?;
+    }
     scan_bundle(&bundle, &bytes).context("bundle security scan failed")?;
     let sig_ok = bundle_signature::verify_bundle_developer_signature(&bundle, &bytes)?;
     let hash = bundle_hash_hex(&bytes);
@@ -221,11 +223,7 @@ fn pack_dir(dir: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn emit_listing(
-    bundle_path: &Path,
-    identity: &Path,
-    output: Option<&PathBuf>,
-) -> anyhow::Result<()> {
+fn emit_listing(bundle_path: &Path, identity: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let listing = build_listing(bundle_path, identity)?;
     let json = serde_json::to_string_pretty(&listing)?;
     if let Some(out) = output {
@@ -300,7 +298,7 @@ fn load_keypair(path: &Path) -> anyhow::Result<Keypair> {
     Keypair::from_protobuf_encoding(&bytes).context("identity file must be libp2p protobuf Ed25519")
 }
 
-fn sign_bundle(path: &Path, identity: &Path, output: Option<&PathBuf>) -> anyhow::Result<()> {
+fn sign_bundle(path: &Path, identity: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let keypair = load_keypair(identity)?;
     let peer_id = keypair.public().to_peer_id().to_string();
     let bytes = std::fs::read(path)?;
@@ -358,7 +356,7 @@ fn sign_bundle(path: &Path, identity: &Path, output: Option<&PathBuf>) -> anyhow
         writer.finish()?;
     }
 
-    let dest = output.map(|p| p.as_path()).unwrap_or(path);
+    let dest = output.unwrap_or(path);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -394,7 +392,7 @@ fn attest_bundle(path: &Path, recipe: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hash_bundle(path: &PathBuf) -> anyhow::Result<()> {
+fn hash_bundle(path: &Path) -> anyhow::Result<()> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     println!("{}", bundle_hash_hex(&bytes));
     Ok(())

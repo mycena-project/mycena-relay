@@ -1,0 +1,34 @@
+[package]
+name = "mycena-miniapp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mini-app platform: manifests, bundles, store, and bridge helpers"
+
+[features]
+default = ["wasm-runtime"]
+wasm-runtime = ["dep:wasmtime"]
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.23"
+blake3.workspace = true
+chrono.workspace = true
+hex.workspace = true
+hmac = "0.12"
+libp2p.workspace = true
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sled.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+wasmtime = { workspace = true, optional = true }
+zip.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+wat = "1.219"

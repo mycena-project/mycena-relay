@@ -45,4 +45,5 @@ fn invalid_sig_message_is_dropped() {
 fn gossip_relay_bodies_are_exempt() {
     assert!(is_gossip_relay_body("[mycena:group]"));
     assert!(is_gossip_relay_body("[appstore]"));
+    assert!(is_gossip_relay_body("[bulletin:mycena/general]"));
 }

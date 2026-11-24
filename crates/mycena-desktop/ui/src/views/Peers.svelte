@@ -1,12 +1,19 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycena Project
 <script>
+  // SPDX-License-Identifier: AGPL-3.0-or-later
+  // Copyright (C) 2026 Mycena Project
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
   import QRCode from "qrcode";
+  import {
+    contactPeerId,
+    sanitizeUserError,
+    userVisibleContactName,
+  } from "../lib/contactDisplay.js";
+  import { PeersDiscoveryPhase, reduce } from "../lib/peersDiscovery.js";
 
-  let { peerId } = $props();
   let peers = $state([]);
+  let acceptedContacts = $state([]);
   let pasteInvite = $state("");
   let qr = $state("");
   let inviteUrl = $state("");
@@ -14,9 +21,26 @@
   let relayStatus = $state(null);
   let rendezvousEnabled = $state(false);
   let connectMessage = $state("");
+  let showAdvanced = $state(false);
+  let discoveryPresentation = $state(null);
 
-  async function refresh() {
+  const connectedLabels = $derived(
+    peers.map((peerId) => {
+      const contact = acceptedContacts.find((c) => contactPeerId(c) === peerId);
+      return userVisibleContactName(contact, "Connected device");
+    }),
+  );
+
+  async function refreshPeers() {
     peers = await invoke("get_peers");
+    try {
+      acceptedContacts = await invoke("list_accepted_contacts");
+    } catch {
+      acceptedContacts = [];
+    }
+  }
+
+  async function refreshInvite() {
     shareAddrs = await invoke("get_shareable_multiaddrs");
     try {
       const settings = await invoke("get_settings");
@@ -26,6 +50,23 @@
     }
   }
 
+  async function refreshDiscovery() {
+    try {
+      const snapshot = await invoke("get_mesh_discovery_snapshot");
+      discoveryPresentation = reduce({
+        ...snapshot,
+        connectedPeerCount: peers.length,
+      });
+    } catch {
+      discoveryPresentation = null;
+    }
+  }
+
+  async function refreshAll() {
+    await Promise.all([refreshPeers(), refreshInvite()]);
+    await refreshDiscovery();
+  }
+
   async function applyInvite() {
     const raw = pasteInvite.trim();
     if (!raw) return;
@@ -33,10 +74,10 @@
     try {
       await invoke("connect_peer_id", { peerId: raw });
       pasteInvite = "";
-      connectMessage = "Connecting… watch Connected devices below.";
-      await refresh();
+      connectMessage = "Connecting… check Connected devices below.";
+      await refreshAll();
     } catch (e) {
-      connectMessage = e instanceof Error ? e.message : String(e);
+      connectMessage = sanitizeUserError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -54,20 +95,31 @@
     }
   }
 
-  $effect(() => {
-    refresh();
-    const unsubs = [];
+  onMount(() => {
+    refreshAll();
+    const retryInvite = setTimeout(refreshInvite, 3_000);
+    const discoveryPoll = setInterval(refreshDiscovery, 2_000);
+    let unlistenMetrics = () => {};
+    let unlistenContacts = () => {};
     (async () => {
-      unsubs.push(await listen("metrics-updated", refresh));
+      unlistenMetrics = await listen("metrics-updated", refreshPeers);
+      unlistenContacts = await listen("contacts-updated", refreshAll);
     })();
-    return () => unsubs.forEach((u) => u?.());
+    return () => {
+      clearTimeout(retryInvite);
+      clearInterval(discoveryPoll);
+      unlistenMetrics();
+      unlistenContacts();
+    };
   });
 
   $effect(() => {
-    inviteUrl =
+    const nextUrl =
       shareAddrs.find((a) => a.startsWith("mycena://invite/")) ??
       shareAddrs[0] ??
       "";
+    if (nextUrl === inviteUrl) return;
+    inviteUrl = nextUrl;
     if (!inviteUrl) {
       qr = "";
       return;
@@ -91,7 +143,7 @@
     <div class="relay-status" class:online={relayStatus.online}>
       <span class="dot"></span>
       {relayStatus.online
-        ? `Public relay online · ${relayStatus.connections ?? 0} devices connected`
+        ? `Public relay online · ${relayStatus.reachable_peers ?? relayStatus.unique_peers ?? 0} reachable`
         : "Public relay unreachable — same Wi‑Fi still works"}
     </div>
   {/if}
@@ -99,48 +151,65 @@
   <section class="hero">
     <h2>Connect another device</h2>
     <p class="lede">
-      Put both devices on the <strong>same Wi‑Fi</strong> when you can — they connect
-      automatically. Otherwise scan each other&apos;s QR once (works across the internet via
-      relay).
+      Scan each other&apos;s QR code once. On the same Wi‑Fi, devices often connect automatically
+      afterward.
     </p>
-    <ul class="steps">
-      <li><strong>Mac → phone:</strong> show the QR below; on Android open <em>Connect → Scan their QR</em>.</li>
-      <li><strong>Phone → Mac:</strong> scan the phone&apos;s QR and paste it below.</li>
-      <li>
-        <strong>Different cities:</strong> scan QR once; <em>Relay discovery</em> is on by default
-        for new installs (both devices online, ~45s).
-      </li>
-      <li><strong>Bluetooth:</strong> not used for pairing yet — use Wi‑Fi or QR + relay.</li>
-    </ul>
     {#if !rendezvousEnabled && peers.length === 0}
       <p class="tip">
-        Tip: turn on <strong>Relay discovery</strong> in Settings if you are not on the same
-        Wi‑Fi.
+        Tip: turn on <strong>Relay discovery</strong> in Settings if you are not on the same Wi‑Fi.
       </p>
     {/if}
   </section>
 
   <section class="qr-panel">
     <h3>Show this QR on your Mac</h3>
+    <p class="muted scan-hint">On the other device: Connect → Scan their QR code.</p>
     {#if qr}
-      <img alt="Invite QR for Android to scan" src={qr} />
+      <img alt="Invite QR for the other device to scan" src={qr} />
     {:else}
       <p class="muted">Starting node…</p>
     {/if}
-    <p class="mono">{inviteUrl || peerId}</p>
-    <div class="row">
-      <button type="button" onclick={copyInvite} disabled={!inviteUrl}>Copy invite link</button>
-    </div>
   </section>
 
+  {#if discoveryPresentation && discoveryPresentation.phase !== PeersDiscoveryPhase.Connected && discoveryPresentation.title}
+    <section
+      class="discovery-banner"
+      class:discovery-active={discoveryPresentation.showProgress}
+      class:discovery-quiet={discoveryPresentation.phase === PeersDiscoveryPhase.NobodyInRange ||
+        discoveryPresentation.phase === PeersDiscoveryPhase.Idle}
+    >
+      <div class="discovery-row">
+        {#if discoveryPresentation.showProgress}
+          <div class="discovery-spinner" aria-hidden="true"></div>
+        {/if}
+        <div>
+          <h3 class="discovery-title">{discoveryPresentation.title}</h3>
+          <p class="discovery-body">{discoveryPresentation.body}</p>
+        </div>
+      </div>
+    </section>
+  {/if}
+
   <section>
-    <h3>Paste from the other device</h3>
-    <textarea
-      bind:value={pasteInvite}
-      placeholder="mycena://invite/v1#12D3Koo…"
-      rows="3"
-    ></textarea>
-    <button type="button" onclick={applyInvite} disabled={!pasteInvite.trim()}>Connect</button>
+    <button type="button" class="linkish" onclick={() => (showAdvanced = !showAdvanced)}>
+      {showAdvanced ? "Hide advanced options" : "Advanced options"}
+    </button>
+    {#if showAdvanced}
+      <p class="muted advanced-hint">
+        For developers: paste an invite link or raw connection code manually.
+      </p>
+      <textarea
+        bind:value={pasteInvite}
+        placeholder="Invite link or code"
+        rows="3"
+      ></textarea>
+      <div class="row">
+        <button type="button" onclick={applyInvite} disabled={!pasteInvite.trim()}>Connect</button>
+        <button type="button" class="secondary" onclick={copyInvite} disabled={!inviteUrl}>
+          Copy invite link
+        </button>
+      </div>
+    {/if}
     {#if connectMessage}
       <p class="message">{connectMessage}</p>
     {/if}
@@ -153,17 +222,17 @@
         None yet. After scanning, wait a few seconds. Same Wi‑Fi should appear without relay.
       </p>
     {:else}
-      {#each peers as peer}
-        <p class="mono peer">{peer}</p>
+      {#each connectedLabels as label}
+        <p class="device-name">{label}</p>
       {/each}
     {/if}
   </section>
 
   <section class="muted-block">
-    <h3>Chat vs Connect</h3>
+    <h3>Contact durability</h3>
     <p>
-      <strong>Connect</strong> = network link (this tab). <strong>Chat</strong> = messaging only
-      with accepted contacts. Scanning a peer-ID QR adds an accepted contact automatically.
+      Scan an invite <strong>once</strong> — the contact stays in your book across restarts.
+      Network paths come and go; you do not need to re-scan when someone drops offline.
     </p>
   </section>
 </div>
@@ -176,6 +245,7 @@
     padding: 16px;
     max-width: 520px;
     margin: 0 auto;
+    color: var(--text);
   }
   .relay-status {
     display: flex;
@@ -202,18 +272,13 @@
   .hero h2 {
     margin: 0 0 8px;
     font-size: 20px;
+    color: var(--text);
   }
   .lede {
-    margin: 0 0 12px;
+    margin: 0;
     font-size: 14px;
     line-height: 1.5;
     color: var(--text-muted);
-  }
-  .steps {
-    margin: 0;
-    padding-left: 1.2rem;
-    font-size: 13px;
-    line-height: 1.5;
   }
   .tip {
     margin: 12px 0 0;
@@ -230,6 +295,7 @@
   h3 {
     margin: 0 0 10px;
     font-size: 14px;
+    color: var(--text);
   }
   .qr-panel {
     text-align: center;
@@ -241,23 +307,57 @@
     margin: 8px auto;
     display: block;
   }
-  .mono {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    word-break: break-all;
+  .scan-hint {
+    margin: 0 0 8px;
   }
-  .peer {
+  .discovery-banner {
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface, #f4f4f5));
+  }
+  .discovery-banner.discovery-quiet {
+    background: var(--surface, #f4f4f5);
+  }
+  .discovery-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .discovery-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 2px;
+    animation: discovery-spin 0.9s linear infinite;
+  }
+  @keyframes discovery-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .discovery-title {
+    margin: 0;
+    font-size: 14px;
+  }
+  .discovery-body {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+  .device-name {
     margin: 6px 0;
+    font-size: 14px;
   }
   textarea {
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px;
-    font-size: 12px;
-    font-family: ui-monospace, monospace;
-    background: none;
-    color: inherit;
+    font-size: 14px;
+    background: var(--surface);
+    color: var(--text);
     resize: vertical;
     box-sizing: border-box;
   }
@@ -271,14 +371,29 @@
     cursor: pointer;
     font-size: 14px;
   }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  button.linkish {
+    margin-top: 0;
+    background: transparent;
+    color: var(--accent);
+    padding: 0;
+    font-size: 13px;
+  }
   button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
   .row {
     display: flex;
-    justify-content: center;
+    flex-wrap: wrap;
     gap: 8px;
+  }
+  .advanced-hint {
+    margin: 8px 0 0;
   }
   .muted,
   .muted-block p {

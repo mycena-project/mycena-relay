@@ -17,6 +17,10 @@ pub enum AppId {
     Coin,
     AppStore,
     MiniAppRevocation,
+    MiniAppBundleChunk,
+    ContactCrdt,
+    GroupCrdt,
+    MarketplaceStock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +34,14 @@ pub enum AppPayload {
     AppStoreListing(Box<crate::miniapp::store::AppStoreListing>),
     /// Signed revocation on scope `mycena/appstore/revocations/v1`.
     MiniAppRevocation(Box<crate::miniapp::revocation::RevocationGossip>),
+    /// Chunked mini-app bundle bytes on scope `mycena/appstore/bundles/v1`.
+    MiniAppBundleChunk(Box<crate::miniapp_epidemic::MiniAppBundleChunk>),
+    /// Contact book CRDT document (direct sync between accepted contacts).
+    ContactCrdt(mycena_l0_facade::crdt::ContactDocument),
+    /// Group membership / name CRDT (gossip on `mycena/group-meta/{id}`).
+    GroupCrdt(mycena_l0_facade::crdt::GroupDocument),
+    /// Marketplace listing stock PN-Counter (gossip on `mycena/marketplace/stock/v1`).
+    MarketplaceStock(mycena_l0_facade::crdt::MarketplaceStock),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

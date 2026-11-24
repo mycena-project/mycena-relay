@@ -5,15 +5,26 @@ namespace mycena {
   void init_node(NodeConfig config);
   void stop_node();
   string local_peer_id();
+  /// Stable account id (long-lived; contacts follow this across transport rotation).
+  string local_account_id();
   /// Ephemeral relay identity (distinct from `local_peer_id()`).
   string relay_peer_id();
   /// Seconds since the current relay keypair was created.
   u64 relay_keypair_age_secs();
+  /// `/p2p-circuit` multiaddr for `remote_peer_id` via federated relay pool.
+  string? relay_circuit_multiaddr(string remote_peer_id);
   sequence<string> known_peers();
+  sequence<string> connected_peers();
+  sequence<CustodyPendingStatus> list_pending_custody();
   NodeMetrics metrics();
 
   [Throws=MycenaException]
   void send_chat_direct(string to_peer, string body);
+  [Throws=MycenaException]
+  void send_chat_priority(string to_peer, string body, u64 deposit_muon);
+  UserTrustSummary user_trust_summary();
+  [Throws=MycenaException]
+  void endorse_peer(string peer_id, u8 strength);
   [Throws=MycenaException]
   void send_chat_broadcast(string body);
   string local_enc_pubkey();
@@ -29,7 +40,14 @@ namespace mycena {
   ContactInfo add_contact(string peer_id, string display_name, boolean accepted);
   [Throws=MycenaException]
   ContactInfo accept_contact(string peer_id);
+  [Throws=MycenaException]
   void reject_contact(string peer_id);
+  [Throws=MycenaException]
+  ContactInfo block_contact(string peer_id);
+  [Throws=MycenaException]
+  ContactInfo unblock_contact(string peer_id);
+  PeerReputationData? peer_reputation(string peer_id);
+  [Throws=MycenaException]
   void remove_contact(string peer_id);
 
   sequence<GroupInfo> list_groups();
@@ -41,12 +59,29 @@ namespace mycena {
   void delete_group(string group_id);
   sequence<ChatMessage> group_chat_history(string group_id, u32 limit);
 
-  void post_bulletin(string scope, string title, string body, u64 ttl_secs);
+  void post_bulletin(string scope, string title, string body, u64 ttl_secs, string? geohash);
   sequence<BulletinPost> bulletins_for_scope(string scope);
   sequence<string> get_bulletin_subscriptions();
   void subscribe_bulletin_scope(string scope);
   void unsubscribe_bulletin_scope(string scope);
   boolean is_bulletin_enabled();
+
+  void post_sos(string geohash, string message, u64 ttl_secs);
+  sequence<SosPost> list_sos_posts();
+  void set_listen_sos(boolean enabled);
+  boolean is_listen_sos_enabled();
+
+  void set_crisis_manual_mode(u8 mode);
+  boolean is_crisis_mode_active();
+  void refresh_crisis_auto(boolean internet_reachable, string? local_geohash_prefix);
+  void set_local_geohash_prefix(string? prefix);
+  void post_resource_map(string geohash, string category, string description, u64 ttl_secs);
+  sequence<ResourceMapEntry> list_resource_map_entries();
+  [Throws=MycenaException]
+  VolunteerTaskEntry post_volunteer_task(string geohash, string category, string description, u32 slots_needed, u64 ttl_secs);
+  sequence<VolunteerTaskEntry> list_volunteer_tasks();
+  [Throws=MycenaException]
+  VolunteerTaskEntry claim_volunteer_task(string task_id);
 
   sequence<ScopeKeyInfo> list_scope_keys();
   [Throws=MycenaException]
@@ -68,6 +103,7 @@ namespace mycena {
   [Throws=MycenaException]
   void send_proximity_message(string enc_pubkey_hex, string message);
 
+  [Throws=MycenaException]
   void send_mail(string to_peer, string subject, string body);
   sequence<MailMessage> mail_inbox(u32 limit);
   sequence<MailMessage> mail_sent(u32 limit);
@@ -76,12 +112,57 @@ namespace mycena {
   void set_display_name(string name);
   string display_name();
   void set_energy_state(EnergyState state);
+  void set_thermal_state(ThermalState state);
+  EnergyProfileData energy_profile();
   void set_rendezvous_enabled(boolean enabled);
+  void set_internet_enabled(boolean enabled);
+  boolean is_internet_enabled();
+  void set_crowd_mode(boolean enabled);
+  boolean is_crowd_mode_enabled();
+  void set_privacy_shaping(PrivacyShapingConfig config);
+  PrivacyShapingOverheadEstimate privacy_shaping_overhead_estimate(PrivacyShapingConfig config);
+  PrivacyShapingConfig default_privacy_shaping_config(PrivacyShapingProfile profile);
+  sequence<string> get_shareable_multiaddrs();
+  [Throws=MycenaException]
+  bytes build_offline_share_bootstrap_sidecar(string install_url);
+  u32 propagate_installed_miniapps();
   void add_bootstrap_peer(string multiaddr);
+  [Throws=MycenaException]
+  void connect_invite(string raw);
+  [Throws=MycenaException]
+  void connect_transport_invite(string raw);
+  void set_wifi_aware_available(boolean available);
+  void set_ble_discovery_active(boolean active);
+  boolean prefer_wifi_aware_for_discovery();
+  void queue_discovery_announcement(string invite_uri);
+  void ingest_wifi_aware_discovery(string peer_hint, string invite_uri, u64 latency_ms);
+  void record_ble_discovery_observation(u64 latency_ms, u32 bytes, boolean success);
+  sequence<string> drain_discovery_announcements(u32 max);
+  void set_webrtc_available(boolean available);
+  void set_webrtc_link_ready(string peer, boolean ready);
+  [Throws=MycenaException]
+  void ingest_webrtc_frame(string from_peer, bytes frame);
+  void post_webrtc_signal(string to_peer, string session_id, u8 kind, string payload, u32? ice_mline_index);
+  sequence<WebRtcSignalFrame> drain_webrtc_signaling_inbound(u32 max);
+  sequence<string> drain_webrtc_negotiation_requests(u32 max);
+  sequence<string> webrtc_stun_servers();
+  [Throws=MycenaException]
+  void ingest_ble_frame(string from_peer, bytes frame);
+  string? peer_id_from_ble_frame(bytes frame);
+  sequence<BleOutboundFrame> drain_ble_outbound(string? to_peer, u32 max);
+  sequence<BleOutboundFrame> drain_bearer_outbound(string? to_peer, u32 max);
+  [Throws=MycenaException]
+  void queue_bearer_bulk(string to_peer, bytes payload);
+  void register_ble_link(string peer_id, string device_id);
+  [Throws=MycenaException]
+  void ingest_ble_stream_frame(string from_peer, bytes frame);
+  sequence<bytes> drain_ble_stream_outbound(string to_peer, u32 max);
+  sequence<string> ble_peer_addrs();
   void set_event_callback(NodeEventCallback callback);
 
   string wallet_address();
   WalletBalance wallet_balance();
+  sequence<VoucherRiskInfo> wallet_voucher_risks();
   void send_transaction(string to_address, u64 amount_muon, string? memo);
   sequence<TxInfo> wallet_recent_transactions(u32 limit);
   void request_faucet();
@@ -103,6 +184,8 @@ namespace mycena {
   [Throws=MycenaException]
   void miniapp_storage_delete(string app_id, string key);
   string miniapp_bridge_call(string app_id, string method, string args_json);
+  string miniapp_get_runtime(string app_id);
+  i32 miniapp_invoke_wasm_run(string app_id);
   string miniapp_issue_bridge_session(string app_id);
   void miniapp_revoke_bridge_session(string app_id);
   [Throws=MycenaException]
@@ -130,6 +213,16 @@ namespace mycena {
 dictionary WalletBalance {
   u64 confirmed_muon;
   u64 pending_muon;
+  u64 settled_muon;
+  u64 unsettled_voucher_muon;
+  u64 voucher_reserved_muon;
+};
+
+dictionary VoucherRiskInfo {
+  string voucher_id;
+  u64 amount_muon;
+  string risk;
+  string message;
 };
 
 dictionary TxInfo {
@@ -144,17 +237,35 @@ dictionary TxInfo {
   boolean confirmed;
 };
 
+dictionary BleOutboundFrame {
+  string to_peer;
+  bytes frame;
+  u8 medium;
+};
+
+dictionary WebRtcSignalFrame {
+  string from_peer;
+  string session_id;
+  u8 kind;
+  string payload;
+  u32? ice_mline_index;
+};
+
 dictionary NodeConfig {
   string db_path;
   string listen_addr;
   string display_name;
   sequence<string> bootstrap_peers;
-  /// Optional 64-char hex (32 bytes) master key for at-rest encryption (Android).
+  /// Optional 64-char hex (32 bytes) master key for at-rest encryption (host-provided; mobile Keychain/Keystore).
   string? storage_key_hex;
   /// Opt-in relay rendezvous (find/be found on public relay).
   boolean rendezvous_enabled;
+  /// When false, local mesh only — no relay/bootstrap dials (user opt-out).
+  boolean internet_enabled;
   /// Bulletin scopes subscribed at startup (opt-in).
   sequence<string> bulletin_subscriptions;
+  /// Dense-event tuning: cap mDNS dials, dense gossip (transport limits apply at node start).
+  boolean crowd_mode;
 };
 
 dictionary NodeMetrics {
@@ -167,6 +278,53 @@ dictionary NodeMetrics {
   u64 connected_peers;
   u64 max_peers;
   u64 peer_cap_rejections;
+  boolean crisis_active;
+  boolean crowd_density_active;
+  u64 crisis_dropped_background_gossip;
+  u64 crisis_dropped_background_forward;
+  u64 crisis_dropped_background_sync;
+  u64 webrtc_links_active;
+  boolean webrtc_host_available;
+  boolean wifi_aware_available;
+  u64 discovery_events_wifi_aware;
+  u64 discovery_events_ble;
+  boolean prefer_wifi_aware_discovery;
+};
+
+enum ExpectedDeliveryBasis {
+  "DeliveryProbability",
+  "EncounterFrequency",
+  "NoCarriersNearby",
+};
+
+dictionary ExpectedDeliveryData {
+  u64 eta_min_ms;
+  u64 eta_max_ms;
+  f64 confidence;
+  u32 active_carrier_count;
+  string? best_carrier_peer;
+  ExpectedDeliveryBasis basis;
+};
+
+dictionary CustodyPendingStatus {
+  string message_id;
+  string? dest_peer;
+  string chat_body;
+  string app_chat_id;
+  u64 enqueued_at_ms;
+  u8 sprays_released;
+  u8 max_spray;
+  u8 hop_count;
+  ExpectedDeliveryData expected;
+};
+
+dictionary UserTrustSummary {
+  u32 relay_contribution;
+  u64 uptime_secs;
+  u32 successful_deliveries;
+  u32 local_endorsements;
+  f64 contribution_score;
+  string contribution_tier;
 };
 
 dictionary HotWalletConfig {
@@ -210,6 +368,47 @@ dictionary BulletinPost {
   u64 expires_at_ms;
 };
 
+dictionary InformationTrustData {
+  u32 corroboration_count;
+  u32 trusted_corroboration_count;
+  f32 source_diversity;
+  f32 geographic_consistency;
+  f32 staleness_factor;
+  f32 trust_score;
+  string status;
+  string display_label;
+};
+
+dictionary SosPost {
+  string geohash;
+  string message;
+  u64 created_at_ms;
+  InformationTrustData trust;
+};
+
+dictionary ResourceMapEntry {
+  string geohash;
+  string category;
+  string description;
+  u64 created_at_ms;
+  u64 ttl_secs;
+  u64 expires_at_ms;
+  InformationTrustData trust;
+};
+
+dictionary VolunteerTaskEntry {
+  string task_id;
+  string geohash;
+  string category;
+  string description;
+  u32 slots_needed;
+  u32 slots_open;
+  u32 claims_count;
+  u64 created_at_ms;
+  u64 ttl_secs;
+  u64 expires_at_ms;
+};
+
 dictionary MailMessage {
   string id;
   string from_peer;
@@ -231,6 +430,18 @@ dictionary GroupInfo {
 enum ContactStatus {
   "Pending",
   "Accepted",
+  "Blocked",
+};
+
+dictionary PeerReputationData {
+  u8 strikes;
+  u64 last_strike_ms;
+  u64 throttled_until_ms;
+  f32 reliability;
+  f32 spam_score;
+  f32 relay_success_rate;
+  u64 age_ms;
+  u16 mutual_contacts;
 };
 
 dictionary ContactInfo {
@@ -238,6 +449,7 @@ dictionary ContactInfo {
   string display_name;
   u64 added_at_ms;
   ContactStatus status;
+  string? account_id;
 };
 
 dictionary MiniAppInfo {
@@ -328,6 +540,50 @@ enum EnergyState {
   "Passive",
 };
 
+enum ThermalState {
+  "Normal",
+  "Warm",
+  "Critical",
+};
+
+enum MovementIndicator {
+  "Unknown",
+  "Stationary",
+  "InMotion",
+};
+
+dictionary EnergyProfileData {
+  EnergyState battery;
+  ThermalState thermal;
+  MovementIndicator movement;
+};
+
+enum PrivacyShapingProfile {
+  "Fast",
+  "Balanced",
+  "Paranoid",
+};
+
+dictionary PrivacyShapingConfig {
+  boolean enabled;
+  PrivacyShapingProfile profile;
+  u64 batch_min_ms;
+  u64 batch_max_ms;
+  boolean padding_enabled;
+  boolean scope_bucketing_enabled;
+  boolean cover_traffic_enabled;
+  u64 cover_interval_secs;
+};
+
+dictionary PrivacyShapingOverheadEstimate {
+  double padding_overhead_pct_typical;
+  u64 batch_latency_ms_min;
+  u64 batch_latency_ms_max;
+  u64 cover_bytes_per_hour_active;
+  u64 cover_bytes_per_hour_intermittent;
+  string battery_impact_summary;
+};
+
 enum ConnectivityMode {
   "Internet",
   "MeshOnly",
@@ -339,6 +595,7 @@ callback interface NodeEventCallback {
   void on_chat_received(ChatMessage message);
   void on_mail_received(MailMessage message);
   void on_bulletin_received(BulletinPost post);
+  void on_sos_received(SosPost post);
   void on_app_store_listing(AppStoreListing listing);
   void on_connectivity_changed(ConnectivityMode mode);
   void on_contact_request(string peer_id, string display_name);
@@ -348,5 +605,5 @@ callback interface NodeEventCallback {
 interface MycenaException {
   InstallError(string detail);
   ChatError(string detail);
-  NodeError(string detail);
+  HostError(string detail);
 };

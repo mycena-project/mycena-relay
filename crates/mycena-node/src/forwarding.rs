@@ -5,6 +5,31 @@ use mycena_core::energy::NodeState;
 use mycena_core::transport::{DirectMessage, MessageStore};
 use std::sync::Arc;
 
+/// Mesh traffic class for crisis prioritization (distinct from envelope [`Priority`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficClass {
+    /// Coin gossip, app store, non-emergency bulletins.
+    Background,
+    Normal,
+    /// SOS, resource map, custody DTN.
+    Essential,
+}
+
+pub fn traffic_class_for_direct(msg: &DirectMessage) -> TrafficClass {
+    if msg.body.starts_with("[bulletin:mycena/sos/v1")
+        || msg.body.starts_with("[bulletin:mycena/resource-map/v1")
+    {
+        return TrafficClass::Essential;
+    }
+    if msg.body.starts_with("[bulletin:") || msg.body.contains("mycena/appstore") {
+        return TrafficClass::Background;
+    }
+    if msg.envelope.custody {
+        return TrafficClass::Essential;
+    }
+    TrafficClass::Normal
+}
+
 pub trait SeenCache: Send {
     fn contains(&self, message_id: &str) -> bool;
     fn insert(&mut self, message_id: String);
@@ -19,12 +44,13 @@ pub enum ForwardDecision {
 }
 
 pub trait ForwardingPolicy: Send + Sync {
-    fn decide(
+    fn decide_crisis_aware(
         &self,
         message: &DirectMessage,
         local_peer: &str,
         known_peers: &[String],
         node_state: NodeState,
+        crisis_active: bool,
     ) -> ForwardDecision;
 }
 
@@ -47,13 +73,18 @@ impl EnergyPolicy for SimpleEnergyPolicy {
 pub struct ProbabilisticForwardingPolicy;
 
 impl ForwardingPolicy for ProbabilisticForwardingPolicy {
-    fn decide(
+    fn decide_crisis_aware(
         &self,
         message: &DirectMessage,
         local_peer: &str,
         known_peers: &[String],
         node_state: NodeState,
+        crisis_active: bool,
     ) -> ForwardDecision {
+        let traffic = traffic_class_for_direct(message);
+        if crisis_active && traffic == TrafficClass::Background {
+            return ForwardDecision::Hold;
+        }
         if message
             .envelope
             .to_peer
@@ -65,7 +96,12 @@ impl ForwardingPolicy for ProbabilisticForwardingPolicy {
         if message.is_expired(now_ms()) {
             return ForwardDecision::Drop("expired");
         }
-        let fanout = base_fanout(node_state, message.envelope.priority);
+        let fanout = base_fanout(
+            node_state,
+            message.envelope.priority,
+            crisis_active,
+            traffic,
+        );
         if fanout == 0 || known_peers.is_empty() {
             return ForwardDecision::Hold;
         }
@@ -87,8 +123,16 @@ impl ForwardingPolicy for ProbabilisticForwardingPolicy {
     }
 }
 
-fn base_fanout(state: NodeState, priority: Priority) -> usize {
-    match state {
+fn base_fanout(
+    state: NodeState,
+    priority: Priority,
+    crisis_active: bool,
+    traffic: TrafficClass,
+) -> usize {
+    if crisis_active && traffic == TrafficClass::Background {
+        return 0;
+    }
+    let base: usize = match state {
         NodeState::Active => match priority {
             Priority::High => 4,
             Priority::Normal => 3,
@@ -103,6 +147,11 @@ fn base_fanout(state: NodeState, priority: Priority) -> usize {
             Priority::High => 1,
             _ => 0,
         },
+    };
+    if crisis_active && traffic == TrafficClass::Essential {
+        base.saturating_add(2).min(6)
+    } else {
+        base
     }
 }
 
@@ -141,7 +190,7 @@ impl IngestPipeline {
             let Ok(peer_id) = author.parse::<libp2p::PeerId>() else {
                 return Ok(false);
             };
-            if !msg.envelope.verify(&peer_id) {
+            if !msg.envelope.verify_or_transition(&peer_id) {
                 return Ok(false);
             }
         }
@@ -157,9 +206,12 @@ impl IngestPipeline {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use async_trait::async_trait;
     use mycena_core::data::Envelope;
+    use mycena_core::lock_or_recover;
     use mycena_core::transport::{MessageStore, StoreStats};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -195,30 +247,42 @@ mod tests {
     #[async_trait]
     impl MessageStore for MemStore {
         async fn persist(&self, message: &DirectMessage) -> anyhow::Result<()> {
-            self.inner
-                .lock()
-                .expect("lock")
+            // POISON-RECOVER: test in-memory store; insert is atomic per message id.
+            lock_or_recover!(self.inner, "mem store")
                 .insert(message.envelope.id.0.clone(), message.clone());
             Ok(())
         }
         async fn recent(&self, _limit: usize) -> anyhow::Result<Vec<DirectMessage>> {
-            Ok(self.inner.lock().expect("lock").values().cloned().collect())
+            // POISON-RECOVER: test read-only scan; incomplete iteration only affects test assertion.
+            Ok(lock_or_recover!(self.inner, "mem store")
+                .values()
+                .cloned()
+                .collect())
         }
         async fn contains(&self, message_id: &str) -> anyhow::Result<bool> {
-            Ok(self.inner.lock().expect("lock").contains_key(message_id))
+            // POISON-RECOVER: test lookup; false negative only fails test, not prod state.
+            Ok(lock_or_recover!(self.inner, "mem store").contains_key(message_id))
         }
         async fn load_by_id(&self, message_id: &str) -> anyhow::Result<Option<DirectMessage>> {
-            Ok(self.inner.lock().expect("lock").get(message_id).cloned())
+            // POISON-RECOVER: test load; None only loses one fixture message.
+            Ok(lock_or_recover!(self.inner, "mem store")
+                .get(message_id)
+                .cloned())
         }
         async fn list_ids_window(&self, _window: Duration) -> anyhow::Result<Vec<String>> {
-            Ok(self.inner.lock().expect("lock").keys().cloned().collect())
+            // POISON-RECOVER: test id listing; partial list only skews test window check.
+            Ok(lock_or_recover!(self.inner, "mem store")
+                .keys()
+                .cloned()
+                .collect())
         }
         async fn gc_expired(&self) -> anyhow::Result<usize> {
             Ok(0)
         }
         async fn stats(&self) -> anyhow::Result<StoreStats> {
             Ok(StoreStats {
-                count: self.inner.lock().expect("lock").len(),
+                // POISON-RECOVER: test stats count; wrong len only fails test metrics.
+                count: lock_or_recover!(self.inner, "mem store").len(),
                 oldest_ms: 0,
             })
         }
@@ -249,8 +313,38 @@ mod tests {
         let policy = ProbabilisticForwardingPolicy;
         let mut msg = mk_msg("hello");
         msg.envelope.to_peer = Some("local".to_string());
-        let d = policy.decide(&msg, "local", &["p1".to_string()], NodeState::Active);
+        let d = policy.decide_crisis_aware(
+            &msg,
+            "local",
+            &["p1".to_string()],
+            NodeState::Active,
+            false,
+        );
         assert!(matches!(d, ForwardDecision::DeliverLocal));
+    }
+
+    #[test]
+    fn crisis_holds_background_traffic() {
+        let policy = ProbabilisticForwardingPolicy;
+        let msg = mk_msg("[bulletin:mycena/coin/v1] gossip");
+        let peers: Vec<String> = (0..5).map(|i| format!("p{i}")).collect();
+        let d = policy.decide_crisis_aware(&msg, "local", &peers, NodeState::Active, true);
+        assert!(matches!(d, ForwardDecision::Hold));
+    }
+
+    #[test]
+    fn crisis_boosts_essential_fanout() {
+        let policy = ProbabilisticForwardingPolicy;
+        let mut msg = mk_msg("[bulletin:mycena/sos/v1] sos");
+        msg.envelope.priority = Priority::High;
+        let peers: Vec<String> = (0..10).map(|i| format!("p{i}")).collect();
+        let normal = policy.decide_crisis_aware(&msg, "local", &peers, NodeState::Active, false);
+        let crisis = policy.decide_crisis_aware(&msg, "local", &peers, NodeState::Active, true);
+        let count = |d: ForwardDecision| match d {
+            ForwardDecision::ForwardTo(v) => v.len(),
+            _ => 0,
+        };
+        assert!(count(crisis) >= count(normal));
     }
 
     #[tokio::test]
@@ -267,5 +361,26 @@ mod tests {
             .ingest(&mut seen, &msg, false)
             .await
             .expect("ingest2"));
+    }
+
+    #[test]
+    fn mem_store_survives_mutex_poison() {
+        let store = Arc::new(MemStore::default());
+        let store2 = Arc::clone(&store);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = lock_or_recover!(store2.inner, "mem store");
+            guard.insert("poison".into(), mk_msg("poison"));
+            panic!("deliberate mem store poison");
+        }));
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+            .block_on(async {
+                let msg = mk_msg("after-poison");
+                let id = msg.envelope.id.0.clone();
+                store.persist(&msg).await.expect("persist after poison");
+                assert!(store.contains(&id).await.expect("contains"));
+            });
     }
 }

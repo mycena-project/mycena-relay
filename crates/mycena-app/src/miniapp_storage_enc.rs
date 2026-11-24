@@ -11,15 +11,19 @@ use sha2::Sha256;
 const ENC_PREFIX: &[u8] = b"enc1:";
 const NONCE_LEN: usize = 12;
 
-pub fn derive_record_key(master: &[u8; 32], scoped_key: &str) -> anyhow::Result<[u8; 32]> {
+pub fn derive_record_key(master: &[u8; 32], scoped_key: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
-    Hkdf::<Sha256>::new(None, master)
+    if Hkdf::<Sha256>::new(None, master)
         .expand(
             format!("mycena-miniapp-kv:{scoped_key}").as_bytes(),
             &mut out,
         )
-        .map_err(|_| anyhow::anyhow!("hkdf expand failed"))?;
-    Ok(out)
+        .is_err()
+    {
+        // INVARIANT: HKDF-SHA256 expand of 32 bytes cannot fail (OKM << 255*hash_len).
+        tracing::error!("hkdf expand rejected 32-byte OKM");
+    }
+    out
 }
 
 pub fn encrypt_value(
@@ -27,17 +31,16 @@ pub fn encrypt_value(
     scoped_key: &str,
     plaintext: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let key = derive_record_key(master, scoped_key)?;
+    let key = derive_record_key(master, scoped_key);
     let cipher = ChaCha20Poly1305::new(&key.into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce: Nonce = nonce_bytes.into();
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(&nonce, plaintext.as_bytes())
-        .map_err(|e| anyhow::anyhow!("encrypt failed: {e}"))?;
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_bytes())
+        .map_err(|e| anyhow::anyhow!("miniapp kv encrypt: {e}"))?;
     let mut out = Vec::with_capacity(ENC_PREFIX.len() + NONCE_LEN + ct.len());
     out.extend_from_slice(ENC_PREFIX);
-    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
     Ok(out)
 }
@@ -52,14 +55,10 @@ pub fn decrypt_value(master: &[u8; 32], scoped_key: &str, blob: &[u8]) -> anyhow
         anyhow::bail!("truncated encrypted miniapp value");
     }
     let (nonce_bytes, ct) = rest.split_at(NONCE_LEN);
-    let key = derive_record_key(master, scoped_key)?;
+    let key = derive_record_key(master, scoped_key);
     let cipher = ChaCha20Poly1305::new(&key.into());
-    let arr: [u8; 12] = nonce_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("invalid nonce length"))?;
-    let nonce: Nonce = arr.into();
     let pt = cipher
-        .decrypt(&nonce, ct)
+        .decrypt(Nonce::from_slice(nonce_bytes), ct)
         .map_err(|_| anyhow::anyhow!("miniapp storage decrypt failed"))?;
     String::from_utf8(pt).map_err(|_| anyhow::anyhow!("invalid decrypted utf8"))
 }

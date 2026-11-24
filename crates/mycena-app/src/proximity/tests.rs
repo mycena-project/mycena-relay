@@ -6,12 +6,13 @@ use super::presence::{
     PresenceProfile, PresenceSignal, ProximityDirectMessage, ProximityMatchIntent,
 };
 use super::store::ProximityStore;
-use mycena_core::crypto::EncryptionKeypair;
+use mycena_l0_facade::data::now_ms;
+use mycena_l0_facade::{encrypt_for, parse_x25519_public_hex, EncKey};
 
 #[test]
 fn presence_signal_expires() {
     let mut signal = PresenceSignal::new("abc".into(), PresenceProfile::default(), 1);
-    signal.created_at_ms = mycena_core::data::now_ms().saturating_sub(2_000);
+    signal.created_at_ms = now_ms().saturating_sub(2_000);
     assert!(signal.is_expired());
 }
 
@@ -68,14 +69,15 @@ fn match_intent_expires() {
 
 #[test]
 fn proximity_direct_message_not_misread_as_presence() {
-    let sender = EncryptionKeypair::generate();
-    let recipient = EncryptionKeypair::generate();
-    let encrypted = mycena_core::crypto::encrypt_for(b"hello", &recipient.public).expect("encrypt");
+    let sender = EncKey::generate();
+    let recipient = EncKey::generate();
+    let recipient_pk = parse_x25519_public_hex(&recipient.public_hex()).expect("parse pk");
+    let encrypted = encrypt_for(b"hello", &recipient_pk).expect("encrypt");
     let direct = ProximityDirectMessage {
         target_enc_pubkey_hex: recipient.public_hex(),
         sender_enc_pubkey_hex: sender.public_hex(),
         encrypted_payload: encrypted,
-        created_at_ms: mycena_core::data::now_ms(),
+        created_at_ms: now_ms(),
     };
     let bytes = direct.encode().expect("encode");
     assert!(ProximityDirectMessage::decode(&bytes).is_ok());

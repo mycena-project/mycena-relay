@@ -1,25 +1,46 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycena Project
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 pub mod api;
+pub mod bridge_host;
 pub mod contacts;
+pub mod crdt_sync;
+pub mod display_name;
 pub mod envelope;
 pub mod groups;
-pub mod miniapp;
+pub mod miniapp_epidemic;
 mod miniapp_storage_enc;
 pub mod node;
 pub mod notify;
+pub mod offline_share;
 pub mod proximity;
 pub mod scope_key;
+pub mod sos;
 pub mod storage;
+pub mod wasm_bridge_host;
+
+pub mod miniapp {
+    pub use crate::bridge_host;
+    pub use crate::wasm_bridge_host;
+    pub use mycena_miniapp::*;
+}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "contacts_tests.rs"]
 mod contacts_tests;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "invite_transport_tests.rs"]
+mod invite_transport_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::envelope::{AppId, AppMessage, AppPayload, BulletinPost, ChatMessage, MailMessage};
     use crate::storage::AppStorage;
+    use mycena_l0_facade::data::now_ms;
 
     #[tokio::test]
     async fn app_message_roundtrip() {
@@ -41,11 +62,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn crdt_app_message_roundtrip() {
+        use mycena_l0_facade::crdt::MarketplaceStock;
+        let stock = MarketplaceStock::new("listing-1".into(), 3, "seller");
+        let msg = AppMessage {
+            app_id: AppId::MarketplaceStock,
+            payload: AppPayload::MarketplaceStock(stock),
+        };
+        let bytes = msg.encode().expect("encode");
+        let decoded = AppMessage::decode(&bytes).expect("decode");
+        assert!(matches!(decoded.payload, AppPayload::MarketplaceStock(_)));
+    }
+
     #[tokio::test]
     async fn bulletin_expiry_pruning() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage = AppStorage::open(dir.path().to_str().expect("path")).expect("open");
-        let now = mycena_core::data::now_ms();
+        let now = now_ms();
         let mk = |expires_at_ms: u64, title: &str| BulletinPost {
             id: uuid::Uuid::new_v4(),
             from_display_name: "alice".to_string(),

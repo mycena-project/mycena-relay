@@ -25,7 +25,8 @@ libp2p = { version = "0.56", features = [
   "macros",
   "kad",
 ] }
-mycena-core = { path = "../mycena-core" }
+mycena-l0-facade = { path = "../mycena-l0-facade" }
+mycena-l1-facade = { path = "../mycena-l1-facade" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true

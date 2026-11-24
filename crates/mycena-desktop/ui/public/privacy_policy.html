@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mycena – Privacy Policy</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; line-height: 1.5; max-width: 40rem; color: #1a1a1a; }
+    h1 { font-size: 1.25rem; }
+    h2 { font-size: 1rem; margin-top: 1.5rem; }
+    .note { background: #f4f4f4; padding: 0.75rem; border-radius: 4px; font-size: 0.95rem; }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+<h1>Mycena Privacy Policy</h1>
+<p>Last updated: July 2026</p>
+
+<p>Mycena is a <strong>decentralized mesh messenger</strong>. There is no central account server.
+This policy describes what data exists, where it goes, and what we (the app publisher) do and do
+not control.</p>
+
+<h2>Summary</h2>
+<ul>
+  <li>We do <strong>not</strong> operate a user database or sell analytics.</li>
+  <li>Your messages are stored on <strong>your device</strong> and may be copied by <strong>other users’ devices</strong> on the mesh.</li>
+  <li>Direct chats can be <strong>end-to-end encrypted</strong> when keys are exchanged; other modes differ (see below).</li>
+  <li>Using the <strong>Internet relay</strong> exposes your IP address to the relay operator for connection setup.</li>
+  <li>We are <strong>pseudonymous</strong>, not anonymous: peers and observers may learn who you talk to, when, and how much traffic you send.</li>
+</ul>
+
+<h2>Data controller</h2>
+<p><strong>The Mycena project</strong> publishes the Mycena app. For Play Store distribution, the Mycena project is the
+data controller for app listing and support contact below. Mesh traffic is peer-to-peer; we do not
+host message content on our servers.</p>
+
+<h2>What is stored on your device</h2>
+<ul>
+  <li><strong>Cryptographic identity keys</strong> (account and transport keys), encrypted where the OS allows.</li>
+  <li><strong>Messages</strong> (chat, mail, bulletin) in a local database, subject to expiry and your settings.</li>
+  <li><strong>Contacts, groups, and encryption key material</strong> you create or accept.</li>
+  <li><strong>MeshCoin wallet data</strong> (experimental utility credits — not bank money).</li>
+  <li><strong>Mini-app data</strong> in per-app local storage when you install mini-apps.</li>
+  <li><strong>Network metadata</strong> such as peer trust scores and encounter logs (used for routing and custody).</li>
+</ul>
+<p>You can delete local data with <strong>Settings → Panic wipe</strong>. That removes keys and databases on
+<strong>this device only</strong>. Copies already stored on other users’ devices or forwarded in the mesh
+are <strong>not</strong> deleted by us — we have no central copy to erase.</p>
+
+<h2>What leaves your device</h2>
+<p>When you use the mesh, other participants and infrastructure may observe:</p>
+<ul>
+  <li><strong>Peer identifiers</strong> (libp2p PeerId and related public keys).</li>
+  <li><strong>Display name</strong> you choose (if set).</li>
+  <li><strong>Encryption public keys</strong> exchanged for direct messaging.</li>
+  <li><strong>Message payloads</strong> — encrypted for direct chat when E2E is active; bulletin/mail
+      formats depend on scope and settings.</li>
+  <li><strong>Metadata</strong>: timing, message size, subscribed bulletin scopes, sync activity,
+      and MeshCoin gossip if enabled (not message plaintext for E2E chat).</li>
+  <li><strong>Custody (store-and-forward) envelopes</strong> — encrypted content plus routing fields
+      (destination peer, hop count, timing) when messages are held for later delivery.</li>
+</ul>
+
+<h2>Internet relay</h2>
+<p>When you use the default Internet path, connections may pass through a <strong>public relay</strong>
+(e.g. community or project-operated libp2p relay). The relay operator can typically see:</p>
+<ul>
+  <li>Your <strong>IP address</strong> and the fact that you use libp2p/Mycena.</li>
+  <li><strong>Circuit endpoints</strong> (which peer IDs connect through the relay).</li>
+  <li><strong>Timing and volume</strong> of traffic (not E2E message plaintext when encryption is used correctly).</li>
+</ul>
+<p><strong>Policy intent:</strong> relay operators should not retain IP logs beyond what is technically
+required for abuse prevention. You can limit relay use via connectivity settings (mesh-only / LAN).</p>
+
+<h2>What we (the Mycena project) collect</h2>
+<ul>
+  <li><strong>No</strong> in-app analytics or advertising identifiers in the open-source client.</li>
+  <li><strong>No</strong> central registration or account database operated by us.</li>
+  <li><strong>Support contact</strong> if you email us (see Contact).</li>
+  <li><strong>Play Store</strong> may collect install and crash data per Google’s policies — see Google Play data safety.</li>
+</ul>
+
+<h2>End-to-end encryption — honest limits</h2>
+<ul>
+  <li><strong>Direct chat:</strong> Can be E2E encrypted after keys are exchanged. The app blocks sending
+      without a peer encryption key (fail-closed).</li>
+  <li><strong>Groups:</strong> Use a shared group key from an invite — anyone with the invite can read history.</li>
+  <li><strong>Bulletin boards:</strong> Scoped channels; treat as public-to-scope unless stated otherwise.</li>
+  <li><strong>Metadata:</strong> E2E does <strong>not</strong> hide that you communicate, with whom (peer IDs),
+      when, or how much data you send.</li>
+</ul>
+
+<h2>MeshCoin (experimental)</h2>
+<p>MeshCoin (MXC) is an <strong>experimental local utility credit</strong>, not legal tender. Balances and
+transactions may be gossiped to peers on the coin scope. Offline payments via vouchers may remain
+<strong>unsettled</strong> until online merge; double-spend across network partitions is detected
+retroactively, not prevented upfront. Do not treat MXC as savings.</p>
+
+<h2>Mini-apps</h2>
+<p>Third-party mini-apps run in a sandboxed WebView with permission-gated APIs (messaging, payments,
+storage, etc.). Store listings require a developer signature; sideload installs require a valid
+bundle signature file. Only install apps you trust. A malicious app with granted permissions can
+abuse the bridge within those permissions.</p>
+
+<h2>Children</h2>
+<p>Mycena is not directed at children under 13. We do not knowingly collect personal data from children.</p>
+
+<h2>Your rights (GDPR / similar)</h2>
+<p>Because we do not operate a central account system:</p>
+<ul>
+  <li><strong>Access / portability:</strong> Data is on your device; export features vary by release.</li>
+  <li><strong>Erasure:</strong> Panic wipe erases local data. We cannot erase mesh copies on other devices.</li>
+  <li><strong>Objection / restriction:</strong> You can stop the node, use mesh-only mode, or uninstall.</li>
+</ul>
+<p>EU users: contact us if you operate a relay or enterprise rollout that processes IP addresses at scale.</p>
+
+<h2>Security and high-risk users</h2>
+<div class="note">
+  <strong>Not safe against:</strong> nation-state traffic analysis, global Sybil attacks, or device
+  seizure without panic wipe. Do not rely on Mycena alone for life-threatening or high-risk
+  activism. More detail:
+  <a href="https://github.com/mycena-project/Mycena/blob/main/docs/security-for-users.md">security-for-users</a>,
+  <a href="https://github.com/mycena-project/Mycena/blob/main/docs/KNOWN_LIMITATIONS.md">KNOWN_LIMITATIONS</a>.
+</div>
+
+<h2>Changes</h2>
+<p>We update this policy when data practices change. Material changes will be reflected in the
+“Last updated” date and, where required, in-app notice.</p>
+
+<h2>Contact</h2>
+<p>Alex, maintainer of the Mycena project<br>
+<a href="https://github.com/mycena-project/Mycena/issues">github.com/mycena-project/Mycena/issues</a></p>
+<p>This document is the in-app and Play Store privacy policy reference (July 2026).</p>
+</body>
+</html>

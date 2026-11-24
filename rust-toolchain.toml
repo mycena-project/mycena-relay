@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible Mycena core builds (see docs/RELEASE_INTEGRITY.md).
+# Floor: wasmtime 36 (≥1.86) and time 0.3.47 via libp2p/asn1-rs (≥1.88).
+[toolchain]
+channel = "1.88.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycena Project
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+mod ble;
+mod discovery;
+mod share_server;
+
 use async_trait::async_trait;
 use mycena_app::contacts::{Contact, ContactStatus};
 use mycena_app::envelope::AppMessage;
@@ -7,11 +12,14 @@ use mycena_app::groups::Group;
 use mycena_app::node::{AppInbox, AppNode};
 use mycena_app::notify::NotificationSink;
 use mycena_app::storage::AppStorage;
-use mycena_coin::{address_from_keypair, CoinNode, CoinTransport, LocalLedger};
-use mycena_core::bootstrap::{load_custom_bootstrap_peers, save_custom_bootstrap_peers};
-use mycena_core::energy::NodeState;
-use mycena_node::{NodeCommand, NodeConfig, NodeHandle, NodeRunner};
+use mycena_coin::{address_from_keypair, CoinNode, CoinTransport, LocalLedger, UserTrustStore};
+use mycena_l0_facade::bootstrap::{load_custom_bootstrap_peers, save_custom_bootstrap_peers};
+use mycena_l0_facade::energy::NodeState;
+use mycena_l1_facade::consistency::{OP_DIRECT_MESSAGE_SEND, OP_GOSSIP_BULLETIN_PUBLISH};
+use mycena_l1_facade::ConnectivityMode;
+use mycena_l1_facade::{HostNodeOptions, NodeCommand, NodeConfig, NodeHandle, NodeRunner};
 use serde_json::json;
+use share_server::ShareServer;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -23,23 +31,129 @@ pub struct AppState {
     app_storage: Arc<AppStorage>,
     app_store: Arc<mycena_app::miniapp::AppStore>,
     coin_node: Arc<CoinNode>,
+    user_trust: Arc<UserTrustStore>,
+    #[allow(dead_code)]
+    user_trust_task: tauri::async_runtime::JoinHandle<()>,
     local_peer_id: String,
     coin_identity_path: String,
     db_path: String,
     cap_mac_key: [u8; 32],
     energy_state: NodeState,
     rendezvous_enabled: bool,
+    internet_enabled: bool,
+    connectivity_mode: Arc<RwLock<ConnectivityMode>>,
+    runner_task: tauri::async_runtime::JoinHandle<()>,
+    ble_host: Option<ble::DesktopBleHost>,
+    discovery: Arc<discovery::MeshDiscoveryState>,
+}
+
+fn connectivity_label(mode: ConnectivityMode) -> &'static str {
+    match mode {
+        ConnectivityMode::Internet => "internet",
+        ConnectivityMode::MeshOnly => "mesh_only",
+    }
+}
+
+fn connectivity_detail(
+    internet_enabled: bool,
+    rendezvous_enabled: bool,
+    mode: ConnectivityMode,
+) -> String {
+    if !internet_enabled {
+        return "Internet disabled in Settings — desktop uses LAN (mDNS) only; no relay or rendezvous.".into();
+    }
+    if mode == ConnectivityMode::MeshOnly {
+        return "Internet enabled but public relay unreachable — local mesh (same Wi‑Fi) only."
+            .into();
+    }
+    if rendezvous_enabled {
+        return "Internet + relay online — LAN, bootstrap relay, and opt-in rendezvous active."
+            .into();
+    }
+    "Internet + relay online — LAN and bootstrap relay; rendezvous discovery off.".into()
+}
+
+async fn connectivity_snapshot(s: &AppState) -> serde_json::Value {
+    let mode = *s.connectivity_mode.read().await;
+    json!({
+        "internet_enabled": s.internet_enabled,
+        "rendezvous_enabled": s.rendezvous_enabled,
+        "connectivity_mode": connectivity_label(mode),
+        "connectivity_detail": connectivity_detail(s.internet_enabled, s.rendezvous_enabled, mode),
+    })
+}
+
+fn emit_settings_updated(app: &AppHandle, snapshot: serde_json::Value) {
+    let _ = app.emit("settings-updated", snapshot);
+}
+
+struct DesktopUserTrustSync {
+    messages_forwarded: u64,
+    messages_delivered_local: u64,
+}
+
+fn wall_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+async fn sync_desktop_user_trust(
+    handle: &NodeHandle,
+    store: &UserTrustStore,
+    sync: &mut DesktopUserTrustSync,
+) {
+    let m = handle.metrics().await;
+    let now = wall_now_ms();
+    if m.messages_forwarded > sync.messages_forwarded {
+        let delta = (m.messages_forwarded - sync.messages_forwarded) as u32;
+        let _ = store.record_relay_forward(now, delta);
+        sync.messages_forwarded = m.messages_forwarded;
+    }
+    if m.messages_delivered_local > sync.messages_delivered_local {
+        let delta = (m.messages_delivered_local - sync.messages_delivered_local) as u32;
+        for _ in 0..delta {
+            let _ = store.record_delivery(now);
+        }
+        sync.messages_delivered_local = m.messages_delivered_local;
+    }
+}
+
+async fn push_desktop_endorsements(handle: &NodeHandle, store: &UserTrustStore) {
+    let map = store.endorsement_boost_map();
+    let _ = handle.send(NodeCommand::SetLocalEndorsements(map)).await;
 }
 
 type SharedState = Arc<RwLock<Option<AppState>>>;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UiSettings {
     #[serde(default = "default_rendezvous_enabled")]
     rendezvous_enabled: bool,
+    #[serde(default = "default_internet_enabled")]
+    internet_enabled: bool,
+    #[serde(default)]
+    max_connectivity: bool,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    listen_sos: bool,
+    #[serde(default)]
+    crowd_mode: bool,
+    /// Geohash prefix (4+ chars) for SOS/bulletin gossip shards — not GPS; user-entered area hint.
+    #[serde(default)]
+    local_geohash_prefix: Option<String>,
+    /// BLE mesh handoff (macOS/Linux — blew GATT host, ADR 003 Phase 1b).
+    #[serde(default)]
+    ble_bootstrap: bool,
 }
 
 fn default_rendezvous_enabled() -> bool {
+    true
+}
+
+fn default_internet_enabled() -> bool {
     true
 }
 
@@ -47,6 +161,13 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             rendezvous_enabled: true,
+            internet_enabled: true,
+            max_connectivity: false,
+            display_name: None,
+            listen_sos: false,
+            crowd_mode: false,
+            local_geohash_prefix: None,
+            ble_bootstrap: false,
         }
     }
 }
@@ -63,7 +184,12 @@ fn load_ui_settings(db_path: &str) -> UiSettings {
         .unwrap_or_default()
 }
 
+fn ensure_db_dir(db_path: &str) -> Result<(), String> {
+    std::fs::create_dir_all(db_path).map_err(|e| e.to_string())
+}
+
 fn save_ui_settings(db_path: &str, settings: &UiSettings) -> Result<(), String> {
+    ensure_db_dir(db_path)?;
     let path = ui_settings_path(db_path);
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
@@ -74,13 +200,35 @@ struct DesktopNotifier {
 }
 
 impl NotificationSink for DesktopNotifier {
-    fn on_chat_received(&self, _from: &str, _preview: &str) {}
+    fn on_chat_received(&self, from: &str, preview: &str) {
+        let _ = self.app.emit(
+            "chat-updated",
+            json!({ "from_peer": from, "body": preview }),
+        );
+    }
 
     fn on_mail_received(&self, _from: &str, _subject: &str) {}
 
     fn on_bulletin_posted(&self, _scope: &str, _title: &str) {}
 
+    fn on_sos_received(&self, payload: &mycena_l0_facade::sos::SosPayload) {
+        let _ = self.app.emit(
+            "sos-updated",
+            json!({
+                "geohash": payload.geohash,
+                "message": payload.message,
+            }),
+        );
+    }
+
     fn on_contact_request(&self, peer_id: &str, display_name: &str) {
+        let _ = self.app.emit(
+            "contacts-updated",
+            json!({ "peer_id": peer_id, "display_name": display_name }),
+        );
+    }
+
+    fn on_contact_added(&self, peer_id: &str, display_name: &str) {
         let _ = self.app.emit(
             "contacts-updated",
             json!({ "peer_id": peer_id, "display_name": display_name }),
@@ -98,12 +246,29 @@ impl CoinTransport for DesktopCoinTransport {
     async fn broadcast_coin_inner(&self, coin_inner: Vec<u8>) -> anyhow::Result<()> {
         let payload = AppMessage::encode_coin_payload(&coin_inner)?;
         self.handle
-            .send(NodeCommand::BroadcastPayload {
-                scope: "mycena/coin".to_string(),
-                body: "coin:broadcast".to_string(),
+            .mesh_broadcast(
+                "mycena/coin".to_string(),
+                "coin:broadcast".to_string(),
                 payload,
-            })
+                OP_GOSSIP_BULLETIN_PUBLISH,
+            )
             .await
+    }
+
+    async fn broadcast_coin_voucher_inner(&self, coin_inner: Vec<u8>) -> anyhow::Result<()> {
+        let payload = AppMessage::encode_coin_payload(&coin_inner)?;
+        self.handle
+            .mesh_broadcast_coin_voucher(
+                "mycena/coin".to_string(),
+                "coin:broadcast".to_string(),
+                payload,
+                OP_GOSSIP_BULLETIN_PUBLISH,
+            )
+            .await
+    }
+
+    async fn peer_payment_voucher_v1_allowed(&self, peer: &str) -> bool {
+        self.handle.peer_payment_voucher_v1_allowed(peer).await
     }
 
     async fn send_direct_coin_inner(
@@ -113,13 +278,47 @@ impl CoinTransport for DesktopCoinTransport {
     ) -> anyhow::Result<()> {
         let payload = AppMessage::encode_coin_payload(&coin_inner)?;
         self.handle
-            .send(NodeCommand::SendDirectPayload {
+            .mesh_send_direct(
                 to_peer,
-                body: "coin:direct".to_string(),
+                "coin:direct".to_string(),
                 payload,
-            })
+                OP_DIRECT_MESSAGE_SEND,
+            )
             .await
     }
+}
+
+#[tauri::command]
+fn get_saved_profile() -> serde_json::Value {
+    let path = default_db_path();
+    let ui = load_ui_settings(&path);
+    let has_data = identity_data_present(&path);
+    let can_auto_start = has_data
+        && ui
+            .display_name
+            .as_ref()
+            .is_some_and(|n| !n.trim().is_empty());
+    json!({
+        "display_name": ui.display_name,
+        "has_local_data": has_data,
+        "can_auto_start": can_auto_start,
+        "db_path": path,
+    })
+}
+
+/// True when prior mesh identity or app database exists (not just an empty folder).
+fn identity_data_present(path: &str) -> bool {
+    let base = std::path::Path::new(path);
+    if base.join(".secrets").join("account_ed25519.enc").exists() {
+        return true;
+    }
+    if base.join("app").exists() {
+        return true;
+    }
+    if base.join("identity").exists() {
+        return true;
+    }
+    false
 }
 
 #[tauri::command]
@@ -135,16 +334,120 @@ fn default_db_path() -> String {
         .to_string()
 }
 
+fn share_dir() -> PathBuf {
+    PathBuf::from(default_db_path()).join("share")
+}
+
+fn default_share_apk_path() -> PathBuf {
+    share_dir().join("mycena.apk")
+}
+
+fn ensure_share_dir() -> Result<PathBuf, String> {
+    let dir = share_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+type ShareServerState = Arc<ShareServer>;
+
 /// Delete local Mycena data (identity, messages, keys). Safe before first successful start.
-#[tauri::command]
-fn reset_local_data(db_path: Option<String>) -> Result<(), String> {
-    let path = db_path.unwrap_or_else(default_db_path);
-    mycena_core::at_rest::clear_keyring_master(&path);
-    if std::path::Path::new(&path).exists() {
-        std::fs::remove_dir_all(&path).map_err(|e| format!("failed to reset local data: {e}"))?;
-        tracing::info!("reset local data at {path}");
+fn wipe_local_data_at(path: &str) -> Result<(), String> {
+    mycena_l0_facade::clear_keyring_master(path);
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Ok(());
+    }
+    let mut last_err: Option<String> = None;
+    for attempt in 0..5 {
+        match std::fs::remove_dir_all(p) {
+            Ok(()) => {
+                tracing::info!("destroyed local data at {path}");
+                mycena_l0_facade::clear_keyring_master(path);
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = Some(format!("{e}"));
+                if attempt < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "failed to destroy local data at {path}: {}",
+        last_err.unwrap_or_else(|| "unknown error".into())
+    ))
+}
+
+/// Wipe the active database path and the default data dir (when they differ).
+fn wipe_all_local_data(active_path: Option<&str>) -> Result<(), String> {
+    let default = default_db_path();
+    if let Some(path) = active_path {
+        wipe_local_data_at(path)?;
+        if path != default {
+            wipe_local_data_at(&default)?;
+        }
+    } else {
+        wipe_local_data_at(&default)?;
     }
     Ok(())
+}
+
+async fn shutdown_active_node(state: &SharedState) {
+    let mut guard = state.write().await;
+    if let Some(s) = guard.take() {
+        s.runner_task.abort();
+        drop(s);
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    }
+}
+
+#[tauri::command]
+async fn reset_local_data(
+    state: State<'_, SharedState>,
+    db_path: Option<String>,
+) -> Result<(), String> {
+    let active_path = {
+        let guard = state.read().await;
+        guard.as_ref().map(|s| s.db_path.clone())
+    };
+    shutdown_active_node(&state).await;
+    let path = db_path.unwrap_or_else(default_db_path);
+    wipe_local_data_at(&path)?;
+    if path != default_db_path() {
+        wipe_local_data_at(&default_db_path())?;
+    }
+    if let Some(active) = active_path {
+        if active != path && active != default_db_path() {
+            wipe_local_data_at(&active)?;
+        }
+    }
+    for check in [path.as_str(), default_db_path().as_str()] {
+        if std::path::Path::new(check).exists() {
+            return Err(format!(
+                "local data still present at {check} after wipe — close Mycena completely and retry"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Stop the node, wipe local data, and restart into onboarding.
+#[tauri::command]
+async fn return_to_onboarding(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
+    let active_path = {
+        let guard = state.read().await;
+        guard.as_ref().map(|s| s.db_path.clone())
+    };
+    shutdown_active_node(&state).await;
+    wipe_all_local_data(active_path.as_deref())?;
+    let default = default_db_path();
+    if std::path::Path::new(&default).exists() {
+        return Err(format!(
+            "local data still present at {default} after wipe — close Mycena completely and retry"
+        ));
+    }
+    app.restart();
 }
 
 #[tauri::command]
@@ -162,27 +465,50 @@ async fn start_node(
         }
     }
 
+    ensure_db_dir(&db_path)?;
+
     let ui_settings = load_ui_settings(&db_path);
-    let connectivity = mycena_node::ConnectivityMonitor::new();
-    mycena_node::ConnectivityMonitor::spawn_monitor(connectivity.mode_tx.clone());
-    let config = NodeConfig {
-        listen_addr: "/ip4/0.0.0.0/tcp/0".parse().expect("valid listen addr"),
+    let mut ui_to_save = ui_settings.clone();
+    ui_to_save.display_name = Some(display_name.clone());
+    save_ui_settings(&db_path, &ui_to_save)?;
+    let (connectivity, internet_enabled) =
+        mycena_l1_facade::ConnectivityMonitor::new(ui_settings.internet_enabled);
+    let mut mode_rx = connectivity.mode_rx.clone();
+    let connectivity_mode = Arc::new(RwLock::new(*mode_rx.borrow()));
+    let connectivity_watch = connectivity_mode.clone();
+    tokio::spawn(async move {
+        loop {
+            if mode_rx.changed().await.is_err() {
+                break;
+            }
+            let mode = *mode_rx.borrow();
+            *connectivity_watch.write().await = mode;
+        }
+    });
+    mycena_l1_facade::ConnectivityMonitor::spawn_monitor(
+        connectivity.mode_tx.clone(),
+        internet_enabled.clone(),
+    );
+    let listen_addr = "/ip4/0.0.0.0/tcp/0"
+        .parse()
+        .map_err(|e| format!("invalid listen addr: {e}"))?;
+    let config = NodeConfig::for_host(HostNodeOptions {
+        listen_addr,
         db_path: db_path.clone(),
         keypair_path: Some(format!("{db_path}/identity")),
-        forwarding_interval_ms: 500,
-        sync_interval_secs: 30,
         bootstrap_peers,
         connectivity_rx: Some(connectivity.mode_rx.clone()),
+        connectivity_mode_tx: Some(connectivity.mode_tx.clone()),
         display_name: Some(display_name.clone()),
         storage_key: None,
-        max_relay_fanout: 3,
-        rendezvous_enabled: ui_settings.rendezvous_enabled,
+        rendezvous_enabled: ui_settings.rendezvous_enabled && ui_settings.internet_enabled,
+        internet_enabled: internet_enabled.clone(),
         bulletin_subscriptions: Vec::new(),
-        max_peers: 50,
-    };
+        crowd_mode: ui_settings.crowd_mode,
+    });
     let (runner, handle) = NodeRunner::new(config).map_err(|e| e.to_string())?;
     let local_peer_id = runner.local_peer_id().to_string();
-    tauri::async_runtime::spawn(async move {
+    let runner_task = tauri::async_runtime::spawn(async move {
         let _ = runner.run().await;
     });
 
@@ -196,7 +522,7 @@ async fn start_node(
         Arc::new(LocalLedger::open(&format!("{db_path}/coin")).map_err(|e| e.to_string())?);
     let identity_path = format!("{db_path}/identity");
     let coin_keypair =
-        mycena_node::load_or_create_keypair(&identity_path).map_err(|e| e.to_string())?;
+        mycena_l1_facade::load_or_create_keypair(&identity_path).map_err(|e| e.to_string())?;
     let coin_addr = address_from_keypair(&coin_keypair);
     let coin_transport = Arc::new(DesktopCoinTransport {
         handle: handle.clone(),
@@ -209,7 +535,7 @@ async fn start_node(
         identity_path,
     ));
 
-    let enc_keypair = mycena_node::secrets::load_or_create_enc_keypair(&db_path, None)
+    let enc_keypair = mycena_l0_facade::secrets::load_or_create_enc_keypair(&db_path, None)
         .map_err(|e| e.to_string())?;
 
     let (app_node, inbox) = AppNode::new(
@@ -224,7 +550,52 @@ async fn start_node(
     );
     let app_node = Arc::new(app_node);
     app_node.clone().start_incoming_task();
+    app_node.clone().start_peer_contact_sync();
+    if ui_settings.listen_sos {
+        let _ = app_node.set_listen_sos(true).await;
+    }
+    if let Some(ref gh) = ui_settings.local_geohash_prefix {
+        if !gh.trim().is_empty() {
+            let _ = app_node.set_local_geohash_prefix(Some(gh.trim())).await;
+        }
+    }
     setup_inbox_emitter(app, inbox);
+
+    let user_trust = Arc::new(UserTrustStore::open(&db_path).map_err(|e| e.to_string())?);
+    let ut_handle = handle.clone();
+    let ut_store = user_trust.clone();
+    let user_trust_task = tauri::async_runtime::spawn(async move {
+        let mut sync = DesktopUserTrustSync {
+            messages_forwarded: 0,
+            messages_delivered_local: 0,
+        };
+        push_desktop_endorsements(&ut_handle, &ut_store).await;
+        let mut metrics_tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut uptime_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = metrics_tick.tick() => {
+                    sync_desktop_user_trust(&ut_handle, &ut_store, &mut sync).await;
+                }
+                _ = uptime_tick.tick() => {
+                    let _ = ut_store.tick_uptime(wall_now_ms(), 60);
+                }
+            }
+        }
+    });
+
+    let discovery = discovery::MeshDiscoveryState::new();
+    discovery
+        .set_ble_bootstrap_enabled(ui_settings.ble_bootstrap)
+        .await;
+
+    let ble_host = ble::DesktopBleHost::start(
+        handle.clone(),
+        app_node.clone(),
+        local_peer_id.clone(),
+        ui_settings.ble_bootstrap,
+        discovery.clone(),
+    );
 
     let cap_mac_key = mycena_app::miniapp::mac_key_from_db_path(&db_path);
     *state.write().await = Some(AppState {
@@ -233,12 +604,19 @@ async fn start_node(
         app_storage,
         app_store,
         coin_node,
+        user_trust,
+        user_trust_task,
         local_peer_id: local_peer_id.clone(),
         coin_identity_path: format!("{db_path}/identity"),
         db_path: db_path.clone(),
         cap_mac_key,
         energy_state: NodeState::Active,
         rendezvous_enabled: ui_settings.rendezvous_enabled,
+        internet_enabled: ui_settings.internet_enabled,
+        connectivity_mode: connectivity_mode.clone(),
+        runner_task,
+        ble_host,
+        discovery,
     });
 
     Ok(local_peer_id)
@@ -250,18 +628,15 @@ async fn get_peers(state: State<'_, SharedState>) -> Result<Vec<String>, String>
     let Some(s) = guard.as_ref() else {
         return Ok(vec![]);
     };
-    let relay = mycena_core::bootstrap::RELAY_PEER_ID;
-    Ok(s.handle
-        .known_peers()
-        .await
-        .into_iter()
-        .filter(|p| p != relay)
-        .collect())
+    Ok(s.handle.connected_peers().await)
 }
 
 #[tauri::command]
-fn get_relay_status() -> Result<serde_json::Value, String> {
-    let status = mycena_core::relay_status::fetch_relay_status(None);
+async fn get_relay_status() -> Result<serde_json::Value, String> {
+    let status =
+        tokio::task::spawn_blocking(|| mycena_l0_facade::relay_status::fetch_relay_status(None))
+            .await
+            .map_err(|e| e.to_string())?;
     serde_json::to_value(status).map_err(|e| e.to_string())
 }
 
@@ -272,49 +647,94 @@ async fn get_shareable_multiaddrs(state: State<'_, SharedState>) -> Result<Vec<S
         .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
     let listen = s.handle.listen_addrs().await;
-    Ok(mycena_core::bootstrap::shareable_dial_multiaddrs(
+    let direct = s.handle.stable_direct_multiaddr(&s.local_peer_id).await;
+    let signed_invite = s
+        .handle
+        .encode_signed_invite_v3(&s.local_peer_id, direct.as_deref())
+        .await
+        .ok();
+    Ok(mycena_l0_facade::bootstrap::shareable_dial_multiaddrs(
         &s.local_peer_id,
+        &s.handle.local_enc_pubkey_hex(),
         &listen,
+        signed_invite.as_deref(),
     ))
 }
 
 #[tauri::command]
-async fn connect_peer_id(state: State<'_, SharedState>, peer_id: String) -> Result<(), String> {
-    let input = peer_id.trim();
-    let target = mycena_core::invite::parse_invite(input)
-        .ok_or_else(|| "invalid invite — use mycena://invite/v1#… or a peer ID".to_string())?;
-    match target {
-        mycena_core::invite::InviteTarget::Multiaddr(addr) => add_peer(state, addr).await,
-        mycena_core::invite::InviteTarget::PeerId(peer_id) => {
-            let label = peer_id.chars().take(16).collect::<String>();
-            {
-                let guard = state.read().await;
-                let s = guard
-                    .as_ref()
-                    .ok_or_else(|| "node not started".to_string())?;
-                let _ = s
-                    .app_node
-                    .add_contact(&peer_id, &label, true)
-                    .map_err(|e| e.to_string())?;
-            }
-            let addr = mycena_core::bootstrap::relay_circuit_multiaddr(&peer_id)
-                .ok_or_else(|| "invalid peer id".to_string())?;
-            add_peer(state, addr).await
-        }
-    }
+async fn connect_peer_id(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    peer_id: String,
+) -> Result<(), String> {
+    let discovery = {
+        let guard = state.read().await;
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| "node not started".to_string())?;
+        s.discovery.set_connecting_from_invite(true).await;
+        s.discovery.clone()
+    };
+    let discovery_timeout = discovery.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+        discovery_timeout.set_connecting_from_invite(false).await;
+    });
+
+    let result = {
+        let guard = state.read().await;
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| "node not started".to_string())?;
+        s.app_node
+            .clone()
+            .connect_from_invite(&peer_id)
+            .await
+            .map_err(|e| e.to_string())
+    };
+
+    discovery.set_connecting_from_invite(false).await;
+
+    result?;
+    let _ = app.emit("contacts-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_mesh_discovery_snapshot(
+    state: State<'_, SharedState>,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let connected = s.handle.connected_peers().await.len() as u32;
+    s.discovery.set_connected_peer_count(connected).await;
+    let snap = s.discovery.snapshot().await;
+    serde_json::to_value(snap).map_err(|e| e.to_string())
 }
 
 fn contact_json(c: Contact) -> serde_json::Value {
     let status = match c.status {
         ContactStatus::Pending => "pending",
         ContactStatus::Accepted => "accepted",
+        ContactStatus::Blocked => "blocked",
     };
     json!({
         "peer_id": c.peer_id,
         "display_name": c.display_name,
         "added_at_ms": c.added_at_ms,
         "status": status,
+        "account_id": c.account_id,
     })
+}
+
+/// Chat sidebar: accepted contacts only (never connected peers — use Connect tab for those).
+#[tauri::command]
+async fn get_chat_contacts(
+    state: State<'_, SharedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    list_accepted_contacts(state).await
 }
 
 #[tauri::command]
@@ -339,12 +759,14 @@ async fn list_accepted_contacts(
     let s = guard
         .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
-    Ok(s.app_node
+    let contacts = s
+        .app_node
         .list_accepted_contacts()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(contact_json)
-        .collect())
+        .filter(|c| mycena_l0_facade::bootstrap::is_mesh_peer_id(&c.peer_id))
+        .collect::<Vec<_>>();
+    Ok(contacts.into_iter().map(contact_json).collect())
 }
 
 #[tauri::command]
@@ -419,6 +841,347 @@ async fn reject_contact(
 }
 
 #[tauri::command]
+async fn block_contact(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    peer_id: String,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let c = s
+        .app_node
+        .block_contact(&peer_id)
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("contacts-updated", ());
+    Ok(contact_json(c))
+}
+
+#[tauri::command]
+async fn unblock_contact(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    peer_id: String,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let c = s
+        .app_node
+        .unblock_contact(&peer_id)
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("contacts-updated", ());
+    Ok(contact_json(c))
+}
+
+#[tauri::command]
+async fn get_peer_reputation(
+    state: State<'_, SharedState>,
+    peer_id: String,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let rep = s.handle.peer_reputation(&peer_id).await;
+    Ok(match rep {
+        Some(r) => json!({
+            "strikes": r.strikes,
+            "last_strike_ms": r.last_strike_ms,
+            "throttled_until_ms": r.throttled_until_ms,
+            "reliability": r.reliability,
+            "spam_score": r.spam_score,
+            "relay_success_rate": r.relay_success_rate,
+            "age_ms": r.age_ms,
+            "mutual_contacts": r.mutual_contacts,
+        }),
+        None => json!({
+            "strikes": 0,
+            "last_strike_ms": 0,
+            "throttled_until_ms": 0,
+            "reliability": 0.25,
+            "spam_score": 0.0,
+            "relay_success_rate": 0.25,
+            "age_ms": 0,
+            "mutual_contacts": 0,
+        }),
+    })
+}
+
+#[tauri::command]
+async fn post_sos(
+    state: State<'_, SharedState>,
+    geohash: String,
+    message: String,
+    ttl_secs: u64,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.app_node
+        .post_sos(&geohash, &message, ttl_secs)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_sos_posts(state: State<'_, SharedState>) -> Result<Vec<serde_json::Value>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    Ok(s.app_node
+        .list_sos_posts_with_trust()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(p, trust)| {
+            json!({
+                "geohash": p.geohash,
+                "message": p.message,
+                "created_at_ms": p.created_at_ms,
+                "trust": trust_json(&trust),
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn set_listen_sos(state: State<'_, SharedState>, enabled: bool) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.app_node
+        .set_listen_sos(enabled)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut ui = load_ui_settings(&s.db_path);
+    ui.listen_sos = enabled;
+    save_ui_settings(&s.db_path, &ui)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_crisis_manual_mode(state: State<'_, SharedState>, mode: u8) -> Result<(), String> {
+    use mycena_l0_facade::crisis_mode::CrisisManualMode;
+    let manual = match mode {
+        1 => CrisisManualMode::ForceOn,
+        2 => CrisisManualMode::ForceOff,
+        _ => CrisisManualMode::FollowAuto,
+    };
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.app_node
+        .set_crisis_manual(manual)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn is_crisis_mode_active(state: State<'_, SharedState>) -> Result<bool, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    Ok(s.app_node.is_crisis_active().await)
+}
+
+#[tauri::command]
+async fn refresh_crisis_auto(
+    state: State<'_, SharedState>,
+    internet_reachable: bool,
+    local_geohash_prefix: Option<String>,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.app_node
+        .refresh_crisis_auto(internet_reachable, local_geohash_prefix.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_local_geohash_prefix(
+    state: State<'_, SharedState>,
+    prefix: Option<String>,
+) -> Result<(), String> {
+    let mut guard = state.write().await;
+    let s = guard
+        .as_mut()
+        .ok_or_else(|| "node not started".to_string())?;
+    let normalized = prefix.filter(|p| !p.trim().is_empty());
+    s.app_node
+        .set_local_geohash_prefix(normalized.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut ui = load_ui_settings(&s.db_path);
+    ui.local_geohash_prefix = normalized;
+    save_ui_settings(&s.db_path, &ui)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn post_resource_map(
+    state: State<'_, SharedState>,
+    geohash: String,
+    category: String,
+    description: String,
+    ttl_secs: u64,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.app_node
+        .post_resource_map(&geohash, &category, &description, ttl_secs)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_resource_map_entries(
+    state: State<'_, SharedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    Ok(s.app_node
+        .list_resource_map_entries_with_trust()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(e, trust)| {
+            json!({
+                "geohash": e.geohash,
+                "category": e.category.as_str(),
+                "description": e.description,
+                "created_at_ms": e.created_at_ms,
+                "ttl_secs": e.ttl_secs,
+                "expires_at_ms": e.expires_at_ms(),
+                "trust": trust_json(&trust),
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn post_volunteer_task(
+    state: State<'_, SharedState>,
+    geohash: String,
+    category: String,
+    description: String,
+    slots_needed: u32,
+    ttl_secs: u64,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let task = s
+        .app_node
+        .post_volunteer_task(&geohash, &category, &description, slots_needed, ttl_secs)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "task_id": task.task_id,
+        "geohash": task.geohash,
+        "category": task.category.as_str(),
+        "description": task.description,
+        "slots_needed": task.slots_needed,
+        "slots_open": task.slots_open(),
+        "claims_count": task.claims.len(),
+    }))
+}
+
+#[tauri::command]
+async fn list_volunteer_tasks(
+    state: State<'_, SharedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    Ok(s.app_node
+        .list_volunteer_tasks()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|task| {
+            json!({
+                "task_id": task.task_id,
+                "geohash": task.geohash,
+                "category": task.category.as_str(),
+                "description": task.description,
+                "slots_needed": task.slots_needed,
+                "slots_open": task.slots_open(),
+                "claims_count": task.claims.len(),
+                "created_at_ms": task.created_at_ms,
+                "expires_at_ms": task.expires_at_ms(),
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn claim_volunteer_task(
+    state: State<'_, SharedState>,
+    task_id: String,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let task = s
+        .app_node
+        .claim_volunteer_task(&task_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "task_id": task.task_id,
+        "slots_open": task.slots_open(),
+        "claims_count": task.claims.len(),
+    }))
+}
+
+fn trust_json(trust: &mycena_l0_facade::information_trust::InformationTrust) -> serde_json::Value {
+    json!({
+        "corroboration_count": trust.corroboration_count,
+        "trusted_corroboration_count": trust.trusted_corroboration_count,
+        "source_diversity": trust.source_diversity,
+        "geographic_consistency": trust.geographic_consistency,
+        "staleness_factor": trust.staleness_factor,
+        "trust_score": trust.trust_score,
+        "status": format!("{:?}", trust.status).to_ascii_lowercase(),
+        "display_label": trust.display_label(),
+    })
+}
+
+#[tauri::command]
+async fn user_trust_summary(state: State<'_, SharedState>) -> Result<serde_json::Value, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let summary = s.user_trust.snapshot();
+    Ok(json!({
+        "relay_contribution": summary.relay_contribution,
+        "uptime_secs": summary.uptime_secs,
+        "successful_deliveries": summary.successful_deliveries,
+        "local_endorsements": summary.local_endorsements,
+        "contribution_score": summary.contribution_score,
+        "contribution_tier": summary.contribution_tier,
+    }))
+}
+
+#[tauri::command]
 async fn get_metrics(state: State<'_, SharedState>) -> Result<serde_json::Value, String> {
     let guard = state.read().await;
     let Some(s) = guard.as_ref() else {
@@ -435,6 +1198,19 @@ async fn get_metrics(state: State<'_, SharedState>) -> Result<serde_json::Value,
         "messages_delivered_local": m.messages_delivered_local,
         "pending_queue_size": m.pending_queue_size,
         "seen_cache_size": m.seen_cache_size,
+        "connected_peers": m.connected_peers,
+        "max_peers": m.max_peers,
+        "crisis_active": m.crisis_active,
+        "crowd_density_active": m.crowd_density_active,
+        "crisis_dropped_background_gossip": m.crisis_dropped_background_gossip,
+        "crisis_dropped_background_forward": m.crisis_dropped_background_forward,
+        "crisis_dropped_background_sync": m.crisis_dropped_background_sync,
+        "webrtc_links_active": m.webrtc_links_active,
+        "webrtc_host_available": m.webrtc_host_available,
+        "wifi_aware_available": m.wifi_aware_available,
+        "discovery_events_wifi_aware": m.discovery_events_wifi_aware,
+        "discovery_events_ble": m.discovery_events_ble,
+        "prefer_wifi_aware_discovery": m.prefer_wifi_aware_discovery,
     }))
 }
 
@@ -475,10 +1251,26 @@ async fn send_chat_encrypted(
         .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
     s.app_node
-        .send_chat_encrypted(to_peer, body)
+        .send_chat_encrypted(to_peer, body, mycena_l0_facade::data::Priority::Normal)
         .await
         .map(|_| "encrypted".to_string())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_pending_custody(
+    state: State<'_, SharedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let guard = state.read().await;
+    let Some(s) = guard.as_ref() else {
+        return Ok(vec![]);
+    };
+    Ok(s.handle
+        .pending_custody_statuses()
+        .await
+        .into_iter()
+        .filter_map(|p| serde_json::to_value(p).ok())
+        .collect())
 }
 
 #[tauri::command]
@@ -491,6 +1283,7 @@ async fn chat_history(
     let Some(s) = guard.as_ref() else {
         return Ok(vec![]);
     };
+    let my_name = s.app_node.display_name().await;
     Ok(s.app_storage
         .chat_history(&peer_id, limit as usize)
         .unwrap_or_default()
@@ -501,6 +1294,7 @@ async fn chat_history(
                 "from_display_name": m.from_display_name,
                 "body": m.body,
                 "timestamp_ms": m.timestamp_ms,
+                "is_mine": m.from_display_name == my_name,
             })
         })
         .collect())
@@ -556,8 +1350,21 @@ async fn wallet_balance(state: State<'_, SharedState>) -> Result<serde_json::Val
     let Some(s) = guard.as_ref() else {
         return Ok(json!({"confirmed_muon": 0u64, "pending_muon": 0u64}));
     };
-    let (confirmed, pending) = s.coin_node.balance().unwrap_or((0, 0));
-    Ok(json!({"confirmed_muon": confirmed, "pending_muon": pending}))
+    let (confirmed, pending) = s
+        .coin_node
+        .balance_eventual()
+        .map(|v| (v.confirmed_muon(), v.pending_muon()))
+        .unwrap_or((0, 0));
+    let settled = s
+        .coin_node
+        .balance_settled()
+        .map(|v| v.spendable_muon())
+        .unwrap_or(0);
+    Ok(json!({
+        "confirmed_muon": confirmed,
+        "pending_muon": pending,
+        "settled_muon": settled,
+    }))
 }
 
 #[tauri::command]
@@ -567,6 +1374,21 @@ async fn wallet_address(state: State<'_, SharedState>) -> Result<String, String>
         .as_ref()
         .map(|s| s.coin_node.local_address().to_string())
         .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn subscribe_bulletin_scope(
+    state: State<'_, SharedState>,
+    scope: String,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.handle
+        .subscribe_bulletin_scope(scope)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -582,7 +1404,7 @@ async fn post_bulletin(
         .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
     s.app_node
-        .post_bulletin(scope, title, body, ttl_secs)
+        .post_bulletin(scope, title, body, ttl_secs, None)
         .await
         .map_err(|e| e.to_string())
 }
@@ -891,6 +1713,20 @@ async fn miniapp_install(
 }
 
 #[tauri::command]
+async fn miniapp_install_official(
+    state: State<'_, SharedState>,
+    app_id: String,
+) -> Result<serde_json::Value, String> {
+    let g = state.read().await;
+    let s = g.as_ref().ok_or_else(|| "node not started".to_string())?;
+    let m = s
+        .app_store
+        .install_official_bundle(&app_id)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(&m).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn miniapp_uninstall(state: State<'_, SharedState>, app_id: String) -> Result<(), String> {
     let g = state.read().await;
     let s = g.as_ref().ok_or_else(|| "node not started".to_string())?;
@@ -906,9 +1742,68 @@ async fn miniapp_browse_store(
     let rows = s.app_store.browse_listings().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for l in rows {
-        out.push(serde_json::to_value(&l).map_err(|e| e.to_string())?);
+        let signature_valid = l.verify_signature().unwrap_or(false);
+        out.push(serde_json::json!({
+            "manifest": l.manifest,
+            "bundle_hash": l.bundle_hash,
+            "sources": l.sources,
+            "published_at_ms": l.published_at_ms,
+            "updated_at_ms": l.updated_at_ms,
+            "signature": l.signature,
+            "signature_valid": signature_valid,
+        }));
     }
     Ok(out)
+}
+
+#[tauri::command]
+async fn miniapp_get_runtime(
+    state: State<'_, SharedState>,
+    app_id: String,
+) -> Result<String, String> {
+    let g = state.read().await;
+    let s = g.as_ref().ok_or_else(|| "node not started".to_string())?;
+    let m = s
+        .app_store
+        .get_manifest(&app_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "unknown app".to_string())?;
+    Ok(m.guest_runtime().as_str().to_string())
+}
+
+#[tauri::command]
+async fn miniapp_invoke_wasm_run(
+    state: State<'_, SharedState>,
+    app_id: String,
+) -> Result<i32, String> {
+    use mycena_app::miniapp::bridge_host::BridgeHost;
+    use mycena_app::miniapp::wasm_bridge_host::run_wasm_guest_for_app;
+
+    let g = state.read().await;
+    let s = g.as_ref().ok_or_else(|| "node not started".to_string())?;
+    let m = s
+        .app_store
+        .get_manifest(&app_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "unknown app".to_string())?;
+    let enc = s.app_node.node_handle().local_enc_pubkey_hex();
+    let safe_mode = s.app_store.effective_safe_mode(&app_id).unwrap_or(false);
+    let host = BridgeHost::new(
+        app_id.clone(),
+        m.permissions,
+        s.app_node.clone(),
+        s.app_node.storage(),
+        s.app_store.clone(),
+        Some(s.coin_node.clone()),
+        s.local_peer_id.clone(),
+        enc,
+        safe_mode,
+        s.cap_mac_key,
+    );
+    run_wasm_guest_for_app(&app_id, &s.app_store, host)
+        .await
+        .map(|r| r.status)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -924,9 +1819,22 @@ async fn miniapp_get_entry_html(
         .get_manifest(&app_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "unknown app".to_string())?;
+    let entry_path = if m.runtime == "wasm" {
+        m.hybrid_ui_entry()
+            .filter(|ui| s.app_store.get_file(&app_id, ui).ok().flatten().is_some())
+            .unwrap_or(&m.entry)
+    } else {
+        &m.entry
+    };
+    if m.runtime == "wasm" && entry_path.ends_with(".wasm") {
+        return Ok(format!(
+            r#"<!DOCTYPE html><html><head>{csp}</head><body><p>WASM mini-app (logic-only). Guest module loaded in sandbox.</p></body></html>"#,
+            csp = mycena_app::miniapp::csp::meta_tag(&script_nonce)
+        ));
+    }
     let bytes = s
         .app_store
-        .get_file(&app_id, &m.entry)
+        .get_file(&app_id, entry_path)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "entry missing".to_string())?;
     let body = String::from_utf8(bytes).map_err(|e| e.to_string())?;
@@ -995,8 +1903,8 @@ async fn miniapp_publish_revocation(
 ) -> Result<(), String> {
     let g = state.read().await;
     let s = g.as_ref().ok_or_else(|| "node not started".to_string())?;
-    let keypair =
-        mycena_node::load_or_create_keypair(&s.coin_identity_path).map_err(|e| e.to_string())?;
+    let keypair = mycena_l1_facade::load_or_create_keypair(&s.coin_identity_path)
+        .map_err(|e| e.to_string())?;
     let entry = s
         .app_store
         .build_revocation_gossip(&app_id, &reason, &s.local_peer_id, &keypair)
@@ -1080,7 +1988,7 @@ async fn miniapp_bridge_call(
         safe_mode,
         s.cap_mac_key,
     );
-    host.handle(&method, &args).await
+    host.handle(&method, &args).await.map_err(|e| e.to_string())
 }
 
 fn node_state_label(state: NodeState) -> &'static str {
@@ -1101,38 +2009,363 @@ fn parse_energy_state(energy_state: &str) -> Result<NodeState, String> {
 }
 
 #[tauri::command]
+async fn get_connectivity_mode(state: State<'_, SharedState>) -> Result<String, String> {
+    let guard = state.read().await;
+    let Some(s) = guard.as_ref() else {
+        return Ok("unknown".into());
+    };
+    let mode = *s.connectivity_mode.read().await;
+    Ok(connectivity_label(mode).to_string())
+}
+
+#[tauri::command]
 async fn get_settings(state: State<'_, SharedState>) -> Result<serde_json::Value, String> {
     let guard = state.read().await;
     let Some(s) = guard.as_ref() else {
         return Ok(json!({}));
     };
     let display_name = s.app_node.display_name().await;
+    let connectivity = *s.connectivity_mode.read().await;
+    let ui = load_ui_settings(&s.db_path);
     Ok(json!({
         "display_name": display_name,
         "energy_state": node_state_label(s.energy_state),
         "local_peer_id": s.local_peer_id,
+        "account_id": s.handle.account_id(),
+        "transport_epoch": s.handle.transport_epoch(),
         "rendezvous_enabled": s.rendezvous_enabled,
+        "internet_enabled": s.internet_enabled,
+        "max_connectivity": ui.max_connectivity,
+        "listen_sos": ui.listen_sos,
+        "crowd_mode": ui.crowd_mode,
+        "local_geohash_prefix": ui.local_geohash_prefix,
+        "ble_bootstrap": ui.ble_bootstrap,
+        "connectivity_mode": connectivity_label(connectivity),
+        "connectivity_detail": connectivity_detail(s.internet_enabled, s.rendezvous_enabled, connectivity),
     }))
 }
 
 #[tauri::command]
 async fn set_rendezvous_enabled(
+    app: AppHandle,
     state: State<'_, SharedState>,
     enabled: bool,
 ) -> Result<(), String> {
-    let mut guard = state.write().await;
+    let snapshot = {
+        let mut guard = state.write().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| "node not started".to_string())?;
+        if !s.internet_enabled && enabled {
+            return Err("Enable internet connectivity before relay discovery".into());
+        }
+        s.handle
+            .send(NodeCommand::SetRendezvousEnabled(enabled))
+            .await
+            .map_err(|e| e.to_string())?;
+        s.rendezvous_enabled = enabled;
+        let mut ui = load_ui_settings(&s.db_path);
+        ui.rendezvous_enabled = enabled;
+        save_ui_settings(&s.db_path, &ui)?;
+        connectivity_snapshot(s).await
+    };
+    emit_settings_updated(&app, snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_internet_enabled(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = state.write().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| "node not started".to_string())?;
+        s.handle
+            .send(NodeCommand::SetInternetEnabled(enabled))
+            .await
+            .map_err(|e| e.to_string())?;
+        s.internet_enabled = enabled;
+        if !enabled {
+            s.rendezvous_enabled = false;
+        }
+        let mut ui = load_ui_settings(&s.db_path);
+        ui.internet_enabled = enabled;
+        if !enabled {
+            ui.rendezvous_enabled = false;
+            ui.max_connectivity = false;
+        }
+        save_ui_settings(&s.db_path, &ui)?;
+        connectivity_snapshot(s).await
+    };
+    emit_settings_updated(&app, snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_max_connectivity(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = state.write().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| "node not started".to_string())?;
+        let mut ui = load_ui_settings(&s.db_path);
+        ui.max_connectivity = enabled;
+        if enabled {
+            s.handle
+                .send(NodeCommand::SetInternetEnabled(true))
+                .await
+                .map_err(|e| e.to_string())?;
+            s.handle
+                .send(NodeCommand::SetRendezvousEnabled(true))
+                .await
+                .map_err(|e| e.to_string())?;
+            s.internet_enabled = true;
+            s.rendezvous_enabled = true;
+            ui.internet_enabled = true;
+            ui.rendezvous_enabled = true;
+        }
+        save_ui_settings(&s.db_path, &ui)?;
+        connectivity_snapshot(s).await
+    };
+    emit_settings_updated(&app, snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_crowd_mode(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = state.write().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| "node not started".to_string())?;
+        s.handle
+            .send(NodeCommand::SetCrowdMode(enabled))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut ui = load_ui_settings(&s.db_path);
+        ui.crowd_mode = enabled;
+        save_ui_settings(&s.db_path, &ui)?;
+        connectivity_snapshot(s).await
+    };
+    emit_settings_updated(&app, snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_ble_bootstrap(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = state.write().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| "node not started".to_string())?;
+        let mut ui = load_ui_settings(&s.db_path);
+        ui.ble_bootstrap = enabled;
+        save_ui_settings(&s.db_path, &ui)?;
+        s.discovery.set_ble_bootstrap_enabled(enabled).await;
+        if let Some(host) = s.ble_host.take() {
+            host.stop_and_wait().await;
+        }
+        s.ble_host = ble::DesktopBleHost::start(
+            s.handle.clone(),
+            s.app_node.clone(),
+            s.local_peer_id.clone(),
+            enabled,
+            s.discovery.clone(),
+        );
+        connectivity_snapshot(s).await
+    };
+    emit_settings_updated(&app, snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn webrtc_set_available(
+    state: State<'_, SharedState>,
+    available: bool,
+) -> Result<(), String> {
+    let guard = state.read().await;
     let s = guard
-        .as_mut()
+        .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
     s.handle
-        .send(NodeCommand::SetRendezvousEnabled(enabled))
+        .send(NodeCommand::SetWebRtcAvailable(available))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn webrtc_set_link_ready(
+    state: State<'_, SharedState>,
+    peer: String,
+    ready: bool,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.handle
+        .send(NodeCommand::SetWebRtcLinkReady { peer, ready })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn webrtc_ingest_frame(
+    state: State<'_, SharedState>,
+    from_peer: String,
+    frame: Vec<u8>,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.handle
+        .send(NodeCommand::IngestWebRtcFrame { from_peer, frame })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn webrtc_post_signal(
+    state: State<'_, SharedState>,
+    to_peer: String,
+    session_id: String,
+    kind: u8,
+    payload: String,
+    ice_mline_index: Option<u32>,
+) -> Result<(), String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    s.handle
+        .send(NodeCommand::PostWebRtcSignal {
+            to_peer,
+            session_id,
+            kind,
+            payload,
+            ice_mline_index,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct WebRtcSignalJson {
+    from_peer: String,
+    session_id: String,
+    kind: u8,
+    payload: String,
+    ice_mline_index: Option<u32>,
+}
+
+#[tauri::command]
+async fn webrtc_drain_signaling_inbound(
+    state: State<'_, SharedState>,
+    max: u32,
+) -> Result<Vec<WebRtcSignalJson>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.handle
+        .send(NodeCommand::DrainWebRtcSignalingInbound {
+            max: max as usize,
+            reply: tx,
+        })
         .await
         .map_err(|e| e.to_string())?;
-    s.rendezvous_enabled = enabled;
-    let mut ui = load_ui_settings(&s.db_path);
-    ui.rendezvous_enabled = enabled;
-    save_ui_settings(&s.db_path, &ui)?;
-    Ok(())
+    Ok(rx
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|sig| WebRtcSignalJson {
+            from_peer: sig.from_peer,
+            session_id: sig.session_id,
+            kind: sig.kind as u8,
+            payload: sig.payload,
+            ice_mline_index: sig.ice_mline_index,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn webrtc_drain_negotiation_requests(
+    state: State<'_, SharedState>,
+    max: u32,
+) -> Result<Vec<String>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.handle
+        .send(NodeCommand::DrainWebRtcNegotiationRequests {
+            max: max as usize,
+            reply: tx,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rx.await.unwrap_or_default())
+}
+
+#[tauri::command]
+fn webrtc_stun_servers() -> Vec<String> {
+    mycena_l0_facade::webrtc_signaling::default_stun_servers()
+}
+
+#[derive(serde::Serialize)]
+struct BearerOutboundJson {
+    to_peer: String,
+    frame: Vec<u8>,
+    medium: u8,
+}
+
+#[tauri::command]
+async fn webrtc_drain_bearer_outbound(
+    state: State<'_, SharedState>,
+    max: u32,
+) -> Result<Vec<BearerOutboundJson>, String> {
+    let guard = state.read().await;
+    let s = guard
+        .as_ref()
+        .ok_or_else(|| "node not started".to_string())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.handle
+        .send(NodeCommand::DrainBearerOutbound {
+            to_peer: None,
+            max: max as usize,
+            reply: Some(tx),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rx
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(to_peer, frame, medium)| BearerOutboundJson {
+            to_peer,
+            frame,
+            medium: medium as u8,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1141,7 +2374,10 @@ async fn set_display_name(state: State<'_, SharedState>, name: String) -> Result
     let s = guard
         .as_ref()
         .ok_or_else(|| "node not started".to_string())?;
-    s.app_node.set_display_name(name).await;
+    s.app_node.set_display_name(name.clone()).await;
+    let mut ui = load_ui_settings(&s.db_path);
+    ui.display_name = Some(name);
+    save_ui_settings(&s.db_path, &ui)?;
     Ok(())
 }
 
@@ -1219,26 +2455,70 @@ async fn set_custom_bootstrap_peers(
     Ok(())
 }
 
+#[tauri::command]
+async fn get_share_status(
+    share: State<'_, ShareServerState>,
+) -> Result<share_server::ShareServerStatus, String> {
+    Ok(share.status().await)
+}
+
+#[tauri::command]
+async fn start_share_server(
+    share: State<'_, ShareServerState>,
+) -> Result<share_server::ShareServerStatus, String> {
+    share.start().await?;
+    Ok(share.status().await)
+}
+
+#[tauri::command]
+async fn stop_share_server(
+    share: State<'_, ShareServerState>,
+) -> Result<share_server::ShareServerStatus, String> {
+    share.stop().await;
+    Ok(share.status().await)
+}
+
+#[tauri::command]
+async fn choose_share_apk(
+    app: AppHandle,
+    share: State<'_, ShareServerState>,
+) -> Result<share_server::ShareServerStatus, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Android APK", &["apk"])
+        .blocking_pick_file();
+
+    let Some(file_path) = picked else {
+        return Ok(share.status().await);
+    };
+
+    let source = file_path.into_path().map_err(|e| e.to_string())?;
+    ensure_share_dir()?;
+    let dest = default_share_apk_path();
+    std::fs::copy(&source, &dest).map_err(|e| format!("Could not copy APK: {e}"))?;
+    share.set_apk_path(dest).await;
+    Ok(share.status().await)
+}
+
 /// Immediately deletes all local data and restarts the app.
 #[tauri::command]
 async fn panic_wipe(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
-    let db_path = {
+    let active_path = {
         let guard = state.read().await;
         guard.as_ref().map(|s| s.db_path.clone())
     };
 
-    {
-        let mut guard = state.write().await;
-        *guard = None;
+    shutdown_active_node(&state).await;
+    wipe_all_local_data(active_path.as_deref())?;
+    let default = default_db_path();
+    if std::path::Path::new(&default).exists() {
+        return Err(format!(
+            "local data still present at {default} after wipe — close Mycena completely and retry"
+        ));
     }
-
-    if let Some(path) = db_path {
-        if std::path::Path::new(&path).exists() {
-            std::fs::remove_dir_all(&path).map_err(|e| format!("failed to wipe data: {e}"))?;
-            tracing::info!("PANIC WIPE: deleted {path}");
-        }
-    }
-
     app.restart();
 }
 
@@ -1273,8 +2553,16 @@ fn setup_inbox_emitter(app: AppHandle, mut inbox: AppInbox) {
                 }
                 result = inbox.bulletin_rx.recv() => {
                     match result {
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Ok(post) => {
+                            if post.scope == mycena_l0_facade::sos::SOS_SCOPE {
+                                let _ = app.emit("sos-updated", ());
+                            } else {
+                                let _ = app.emit("bulletin-updated", ());
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             let _ = app.emit("bulletin-updated", ());
+                            let _ = app.emit("sos-updated", ());
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -1301,49 +2589,94 @@ fn setup_event_emitter(app_handle: AppHandle, state: SharedState) {
                 continue;
             };
             let metrics = s.handle.metrics().await;
-            let peers = s.handle.known_peers().await.len();
+            let live_peers: Vec<String> = s.handle.connected_peers().await;
+            let peers = live_peers.len();
+            let connectivity = *s.connectivity_mode.read().await;
             let _ = app_handle.emit(
                 "metrics-updated",
                 json!({
                     "forwarded": metrics.messages_forwarded,
                     "queue": metrics.pending_queue_size,
                     "peers": peers,
+                    "connectivity": connectivity_label(connectivity),
+                    "internet_enabled": s.internet_enabled,
+                    "rendezvous_enabled": s.rendezvous_enabled,
+                    "connectivity_detail": connectivity_detail(
+                        s.internet_enabled,
+                        s.rendezvous_enabled,
+                        connectivity,
+                    ),
                 }),
             );
         }
     });
 }
 
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            EnvFilter::new("mycena_desktop=info,mycena_node=info,mycena_app=info,libp2p_mdns=info")
+        }))
+        .with_target(true)
+        .try_init();
+}
+
 pub fn run() {
+    init_tracing();
     let shared_state: SharedState = Arc::new(RwLock::new(None));
+    let _ = ensure_share_dir();
+    let share_server: ShareServerState = Arc::new(ShareServer::new(default_share_apk_path()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(shared_state.clone())
+        .manage(share_server)
         .setup(move |app| {
             setup_event_emitter(app.handle().clone(), shared_state.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_default_db_path,
+            get_saved_profile,
             reset_local_data,
+            return_to_onboarding,
             start_node,
             get_peers,
             get_relay_status,
             get_shareable_multiaddrs,
+            get_mesh_discovery_snapshot,
             connect_peer_id,
+            get_chat_contacts,
             list_contacts,
             list_accepted_contacts,
             list_pending_contacts,
             add_contact,
             accept_contact,
             reject_contact,
+            block_contact,
+            unblock_contact,
+            get_peer_reputation,
+            post_sos,
+            list_sos_posts,
+            set_listen_sos,
+            set_crisis_manual_mode,
+            is_crisis_mode_active,
+            refresh_crisis_auto,
+            set_local_geohash_prefix,
+            post_resource_map,
+            list_resource_map_entries,
+            post_volunteer_task,
+            list_volunteer_tasks,
+            claim_volunteer_task,
+            user_trust_summary,
             get_metrics,
             send_chat,
             peer_has_enc_key,
             send_chat_encrypted,
+            list_pending_custody,
             chat_history,
             send_mail,
             mail_inbox,
@@ -1351,6 +2684,7 @@ pub fn run() {
             wallet_address,
             wallet_send,
             post_bulletin,
+            subscribe_bulletin_scope,
             bulletins_for_scope,
             add_peer,
             list_groups,
@@ -1363,8 +2697,11 @@ pub fn run() {
             miniapp_list_installed,
             miniapp_preview_install,
             miniapp_install,
+            miniapp_install_official,
             miniapp_uninstall,
             miniapp_browse_store,
+            miniapp_get_runtime,
+            miniapp_invoke_wasm_run,
             miniapp_get_entry_html,
             miniapp_bridge_call,
             miniapp_revoke_bridge_session,
@@ -1374,15 +2711,33 @@ pub fn run() {
             miniapp_set_safe_mode,
             miniapp_report_app,
             get_settings,
+            get_connectivity_mode,
             set_display_name,
             set_energy_state,
             set_rendezvous_enabled,
+            set_internet_enabled,
+            set_max_connectivity,
+            set_ble_bootstrap,
+            webrtc_set_available,
+            webrtc_set_link_ready,
+            webrtc_ingest_frame,
+            webrtc_post_signal,
+            webrtc_drain_signaling_inbound,
+            webrtc_drain_negotiation_requests,
+            webrtc_stun_servers,
+            webrtc_drain_bearer_outbound,
+            set_crowd_mode,
             get_store_stats,
             run_gc,
             get_custom_bootstrap_peers,
             set_custom_bootstrap_peers,
+            get_share_status,
+            start_share_server,
+            stop_share_server,
+            choose_share_apk,
             panic_wipe,
         ])
         .run(tauri::generate_context!())
-        .expect("error running tauri application");
+        // INVARIANT: process-fatal if the native window cannot start.
+        .unwrap_or_else(|e| panic!("error running tauri application: {e}"));
 }

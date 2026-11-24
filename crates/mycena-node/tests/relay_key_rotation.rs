@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use libp2p::identity;
 use mycena_core::transport::{MeshTransport, TransportEvent};
-use mycena_node::{NodeConfig, NodeRunner};
+use mycena_node::{IdentityBootstrap, NodeConfig, NodeRunner};
 use std::future;
 use tempfile::tempdir;
 
@@ -78,7 +78,8 @@ fn relay_peer_id_differs_from_identity() {
     let transport = StubTransport::new();
     let local = transport.local_peer_id();
     let (runner, handle) =
-        NodeRunner::new_with_transport(config, Box::new(transport)).expect("node runner");
+        NodeRunner::new_with_transport(config, Box::new(transport), IdentityBootstrap::ephemeral())
+            .expect("node runner");
 
     assert_ne!(runner.relay_peer_id(), local);
     assert_ne!(handle.relay_peer_id(), local);
@@ -88,8 +89,12 @@ fn relay_peer_id_differs_from_identity() {
 fn relay_key_rotates_after_24h() {
     let dir = tempdir().expect("tempdir");
     let config = NodeConfig::with_defaults(dir.path().to_str().expect("temp path"));
-    let (runner, _) = NodeRunner::new_with_transport(config, Box::new(StubTransport::new()))
-        .expect("node runner");
+    let (runner, _) = NodeRunner::new_with_transport(
+        config,
+        Box::new(StubTransport::new()),
+        IdentityBootstrap::ephemeral(),
+    )
+    .expect("node runner");
 
     runner.set_relay_keypair_age_for_test(86_401);
     let old = runner.relay_peer_id();

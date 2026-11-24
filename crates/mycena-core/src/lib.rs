@@ -1,14 +1,46 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mycena Project
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
+pub mod account_identity;
 pub mod at_rest;
+pub mod bearer_transport;
+pub mod ble_mesh;
+pub mod ble_multiaddr;
+pub mod ble_stream;
 pub mod bootstrap;
+pub mod consistency;
+pub mod contact_hello;
+pub mod crdt;
+pub mod crisis_mode;
+pub mod crowd_density;
 pub mod crypto;
 pub mod data;
 pub mod e2e_direct_wrap;
 pub mod energy;
-pub mod identity;
+pub mod fact_claim;
+pub mod identity_rotation;
+pub mod information_trust;
 pub mod invite;
+pub mod lock_recover;
+pub mod mesh_profile;
+pub mod privacy_shaping;
+pub mod protocol;
+pub mod protocol_capabilities;
+pub mod rate_limit;
+pub mod relay_diversity;
+pub mod relay_pool;
+pub mod relay_registry;
 pub mod relay_status;
+pub mod release_integrity;
 pub mod rendezvous;
+pub mod rendezvous_dial;
+pub mod resource_map;
+pub mod sos;
+pub mod standard_bootstrap;
 pub mod sync;
+pub mod topic_shard;
 pub mod transport;
+pub mod transport_score;
+pub mod volunteer;
+pub mod webrtc_signaling;

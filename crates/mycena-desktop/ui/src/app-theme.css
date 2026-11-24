@@ -1,0 +1,71 @@
+/* Shared theme tokens — explicit text colors so macOS dark mode cannot wash out UI. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f4f4f2;
+  --surface-elevated: #f8f7f4;
+  --border: #e5e3da;
+  --sidebar-bg: #f8f7f4;
+  --accent: #1d9e75;
+  --accent-subtle: #e1f5ee;
+  --text: #1c1c1a;
+  --text-secondary: #444440;
+  --text-muted: #6b6b66;
+  --muted: #c8c8c0;
+  --danger: #dc2626;
+  --danger-subtle: #fde8e8;
+  --msg-in: #eceae4;
+  --msg-out: #d4f0e4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a18;
+    --surface: #252523;
+    --surface-elevated: #2e2e2b;
+    --border: #3d3d3a;
+    --sidebar-bg: #222220;
+    --accent: #3ecf9a;
+    --accent-subtle: #1a3d30;
+    --text: #eceae3;
+    --text-secondary: #c8c6bf;
+    --text-muted: #9a9890;
+    --muted: #555550;
+    --danger: #f87171;
+    --danger-subtle: #3d1f1f;
+    --msg-in: #2e2e2c;
+    --msg-out: #1e3d32;
+  }
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+  color: var(--text);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  color: var(--text);
+  font-family: inherit;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

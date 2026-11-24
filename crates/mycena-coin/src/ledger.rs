@@ -3,7 +3,9 @@
 use crate::address::{address_from_public_key, validate_address};
 use crate::settlement_policy::SettlementPolicy;
 use crate::velocity::VelocityTracker;
+use crate::views::{AccountBalanceView, InsufficientSettledFunds, SpendAuthorization};
 use libp2p::identity::PublicKey;
+use mycena_l0_facade::consistency::{EventuallyConsistentModel, SettlementRequiredModel};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::HashSet;
@@ -41,7 +43,7 @@ impl Transaction {
     ) -> anyhow::Result<Self> {
         let from = address_from_keypair(keypair);
         let from_public_key = keypair.public().encode_protobuf();
-        let timestamp_ms = mycena_core::data::now_ms();
+        let timestamp_ms = mycena_l0_facade::data::now_ms();
         let mut tx = Self {
             id: String::new(),
             from,
@@ -114,6 +116,12 @@ pub struct AccountState {
     pub balance_muon: u64,
     pub next_nonce: u64,
     pub pending_received: u64,
+    /// Voucher credits not spendable until settlement (see `voucher_settlement`).
+    #[serde(default)]
+    pub unsettled_voucher_muon: u64,
+    /// Issuer-side hold while an outstanding signed voucher exists (excluded from spend).
+    #[serde(default)]
+    pub voucher_reserved_muon: u64,
 }
 
 /// Local ledger — no global state, only what this node has seen.
@@ -146,8 +154,26 @@ impl LocalLedger {
         self.policy = policy;
     }
 
-    /// Store a TX. Returns `Err` on I/O; business rules as [`ApplyResult`].
-    pub fn apply_transaction(&self, tx: &Transaction) -> anyhow::Result<ApplyResult> {
+    /// Apply a transaction received from the mesh (no local spend token required).
+    pub fn apply_incoming_transaction(&self, tx: &Transaction) -> anyhow::Result<ApplyResult> {
+        self.apply_transaction_inner(tx)
+    }
+
+    /// Apply a locally authored transaction; requires [`SpendAuthorization`].
+    pub fn apply_outgoing_transaction(
+        &self,
+        tx: &Transaction,
+        auth: &SpendAuthorization,
+    ) -> anyhow::Result<ApplyResult> {
+        if !auth.matches_transaction(tx) {
+            return Ok(ApplyResult::Invalid(
+                "SpendAuthorization does not match transaction".into(),
+            ));
+        }
+        self.apply_transaction_inner(tx)
+    }
+
+    fn apply_transaction_inner(&self, tx: &Transaction) -> anyhow::Result<ApplyResult> {
         if self.transaction_tree()?.contains_key(tx.id.as_bytes())? {
             return Ok(ApplyResult::Duplicate);
         }
@@ -259,6 +285,109 @@ impl LocalLedger {
     }
 
     pub fn account_state(&self, address: &str) -> anyhow::Result<AccountState> {
+        self.load_account(address)
+    }
+
+    pub fn eventual_balance_view(
+        &self,
+        address: &str,
+    ) -> anyhow::Result<AccountBalanceView<EventuallyConsistentModel>> {
+        Ok(AccountBalanceView::from_account(
+            &self.load_account(address)?,
+        ))
+    }
+
+    pub fn settled_balance_view(
+        &self,
+        address: &str,
+    ) -> anyhow::Result<AccountBalanceView<SettlementRequiredModel>> {
+        Ok(AccountBalanceView::from_settled_account(
+            &self.load_account(address)?,
+        ))
+    }
+
+    /// Burn settled credits for non-transferable utility (e.g. message priority caution).
+    pub fn burn_settled_credits(
+        &self,
+        from: &str,
+        amount_muon: u64,
+    ) -> Result<(), InsufficientSettledFunds> {
+        let _auth = self.authorize_spend(from, amount_muon)?;
+        self.update_account(from, |acc| {
+            acc.balance_muon = acc.balance_muon.saturating_sub(amount_muon);
+        })
+        .map_err(|_| InsufficientSettledFunds {
+            have_settled: 0,
+            need: amount_muon,
+        })?;
+        Ok(())
+    }
+
+    /// Authorize an outgoing spend against **settled** local balance only.
+    pub fn authorize_spend(
+        &self,
+        from: &str,
+        total_muon: u64,
+    ) -> Result<SpendAuthorization, InsufficientSettledFunds> {
+        let view = self
+            .settled_balance_view(from)
+            .map_err(|_e| InsufficientSettledFunds {
+                have_settled: 0,
+                need: total_muon,
+            })?;
+        if view.spendable_muon() >= total_muon {
+            Ok(SpendAuthorization::new(from.to_string(), total_muon))
+        } else {
+            Err(InsufficientSettledFunds {
+                have_settled: view.spendable_muon(),
+                need: total_muon,
+            })
+        }
+    }
+
+    /// Hold settled funds for an issuer-signed voucher (reduces spendable balance).
+    pub fn reserve_voucher_funds(&self, address: &str, amount_muon: u64) -> anyhow::Result<()> {
+        let acc = self.account_state(address)?;
+        let spendable = acc.balance_muon.saturating_sub(acc.voucher_reserved_muon);
+        if spendable < amount_muon {
+            anyhow::bail!(
+                "insufficient settled balance to reserve voucher: have {spendable} need {amount_muon}"
+            );
+        }
+        self.policy
+            .check_transfer_amount(amount_muon)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        self.update_account(address, |acc| {
+            acc.voucher_reserved_muon = acc.voucher_reserved_muon.saturating_add(amount_muon);
+        })
+    }
+
+    pub fn release_voucher_reservation(
+        &self,
+        address: &str,
+        amount_muon: u64,
+    ) -> anyhow::Result<()> {
+        self.update_account(address, |acc| {
+            acc.voucher_reserved_muon = acc.voucher_reserved_muon.saturating_sub(amount_muon);
+        })
+    }
+
+    /// After settlement: pay winner from issuer settled balance and release hold.
+    pub fn settle_voucher_from_issuer(
+        &self,
+        issuer: &str,
+        pay_amount_muon: u64,
+        reserved_amount_muon: u64,
+    ) -> anyhow::Result<()> {
+        self.update_account(issuer, |acc| {
+            acc.balance_muon = acc.balance_muon.saturating_sub(pay_amount_muon);
+            acc.voucher_reserved_muon = acc
+                .voucher_reserved_muon
+                .saturating_sub(reserved_amount_muon);
+        })
+    }
+
+    fn load_account(&self, address: &str) -> anyhow::Result<AccountState> {
         let tree = self.db.open_tree("accounts")?;
         match tree.get(address.as_bytes())? {
             Some(bytes) => Ok(bincode::deserialize(&bytes)?),
@@ -296,6 +425,38 @@ impl LocalLedger {
             .map_err(|e| anyhow::anyhow!(e))?;
         self.update_account(address, |acc| {
             acc.balance_muon += amount_muon;
+        })
+    }
+
+    /// Provisional voucher credit — excluded from [`authorize_spend`].
+    pub fn add_unsettled_voucher_credit(
+        &self,
+        address: &str,
+        amount_muon: u64,
+    ) -> anyhow::Result<()> {
+        self.update_account(address, |acc| {
+            acc.unsettled_voucher_muon = acc.unsettled_voucher_muon.saturating_add(amount_muon);
+        })
+    }
+
+    pub fn promote_voucher_to_pending(
+        &self,
+        address: &str,
+        amount_muon: u64,
+    ) -> anyhow::Result<()> {
+        self.update_account(address, |acc| {
+            acc.unsettled_voucher_muon = acc.unsettled_voucher_muon.saturating_sub(amount_muon);
+            acc.pending_received = acc.pending_received.saturating_add(amount_muon);
+        })
+    }
+
+    pub fn claw_back_unsettled_voucher(
+        &self,
+        address: &str,
+        amount_muon: u64,
+    ) -> anyhow::Result<()> {
+        self.update_account(address, |acc| {
+            acc.unsettled_voucher_muon = acc.unsettled_voucher_muon.saturating_sub(amount_muon);
         })
     }
 

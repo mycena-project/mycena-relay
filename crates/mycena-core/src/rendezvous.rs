@@ -2,111 +2,99 @@
 // Copyright (C) 2026 Mycena Project
 //! Rendezvous HTTP API against the public relay (opt-in discovery).
 //!
-//! Register/unregister bodies are signed with the libp2p identity so a third
-//! party cannot opt another peer in or knock them off the list.
+//! Registration is **signed** with the node's libp2p key. Unsigned `{peer_id}`
+//! POSTs are rejected so an attacker cannot inject arbitrary IDs onto the list.
 
-use libp2p::PeerId;
+use libp2p::identity::{Keypair, PublicKey};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_RELAY_HOST: &str = "mycena-relay.fly.dev";
-const SIGN_DOMAIN: &[u8] = b"mycena-rendezvous-v1";
 const MAX_SKEW_MS: u64 = 5 * 60 * 1000;
+const BINDING: &str = "mycena-rendezvous-v1";
 
 #[derive(Debug, Deserialize)]
 struct RendezvousResponse {
     peers: Vec<String>,
 }
 
+/// Signed proof that the caller controls `peer_id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RendezvousAuthBody {
+pub struct RendezvousProof {
     pub peer_id: String,
+    pub public_key_hex: String,
     pub ts_ms: u64,
     pub signature_hex: String,
 }
 
-fn relay_host(host: Option<&str>) -> String {
-    let env_host = std::env::var("MYCENA_RELAY_HOST").ok();
-    host.or(env_host.as_deref())
-        .unwrap_or(DEFAULT_RELAY_HOST)
-        .to_string()
+fn relay_origin(host: Option<&str>) -> String {
+    crate::standard_bootstrap::relay_http_origin(host)
 }
 
-pub fn signing_bytes(peer_id: &str, register: bool, ts_ms: u64) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(SIGN_DOMAIN.len() + peer_id.len() + 16);
-    bytes.extend_from_slice(SIGN_DOMAIN);
-    bytes.push(0);
-    bytes.push(u8::from(register));
-    bytes.extend_from_slice(peer_id.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(&ts_ms.to_le_bytes());
-    bytes
+fn canonical_message(action: &str, peer_id: &str, ts_ms: u64) -> String {
+    format!("{BINDING}|{action}|{peer_id}|{ts_ms}")
 }
 
-pub fn sign_registration(
-    keypair: &libp2p::identity::Keypair,
+/// Build a signed register/unregister body from the local libp2p key.
+pub fn sign_rendezvous_proof(
+    keypair: &Keypair,
     register: bool,
-) -> anyhow::Result<RendezvousAuthBody> {
+    ts_ms: u64,
+) -> anyhow::Result<RendezvousProof> {
     let peer_id = keypair.public().to_peer_id().to_string();
-    let ts_ms = crate::data::now_ms();
-    let sig = keypair
-        .sign(&signing_bytes(&peer_id, register, ts_ms))
-        .map_err(|e| anyhow::anyhow!("rendezvous sign: {e}"))?;
-    Ok(RendezvousAuthBody {
+    let action = if register { "register" } else { "unregister" };
+    let msg = canonical_message(action, &peer_id, ts_ms);
+    let signature = keypair.sign(msg.as_bytes())?;
+    Ok(RendezvousProof {
         peer_id,
+        public_key_hex: hex::encode(keypair.public().encode_protobuf()),
         ts_ms,
-        signature_hex: hex::encode(sig),
+        signature_hex: hex::encode(signature),
     })
 }
 
-fn verify_peer_signature(peer_id: &PeerId, bytes: &[u8], sig: &[u8]) -> bool {
-    let multihash = peer_id.as_ref();
-    if multihash.code() != 0 {
-        return false;
-    }
-    let Ok(pk) = libp2p::identity::PublicKey::try_decode_protobuf(multihash.digest()) else {
-        return false;
-    };
-    pk.verify(bytes, sig)
-}
-
-/// Parse and verify a register/unregister body. Returns the authenticated PeerId.
-pub fn verify_registration(
-    body: &RendezvousAuthBody,
+/// Verify a proof. Returns the authenticated peer ID.
+pub fn verify_rendezvous_proof(
+    proof: &RendezvousProof,
     register: bool,
     now_ms: u64,
-) -> Result<PeerId, &'static str> {
-    let peer_id: PeerId = body.peer_id.parse().map_err(|_| "invalid peer id")?;
-    let skew = now_ms.abs_diff(body.ts_ms);
-    if skew > MAX_SKEW_MS {
-        return Err("timestamp skew");
+) -> Result<String, &'static str> {
+    if proof.peer_id.is_empty() {
+        return Err("empty peer_id");
     }
-    let sig = hex::decode(body.signature_hex.trim()).map_err(|_| "invalid signature hex")?;
-    let bytes = signing_bytes(&body.peer_id, register, body.ts_ms);
-    if !verify_peer_signature(&peer_id, &bytes, &sig) {
+    let skew = now_ms.abs_diff(proof.ts_ms);
+    if skew > MAX_SKEW_MS {
+        return Err("timestamp outside replay window");
+    }
+    let pk_bytes =
+        hex::decode(proof.public_key_hex.trim()).map_err(|_| "invalid public_key_hex")?;
+    let pk = PublicKey::try_decode_protobuf(&pk_bytes).map_err(|_| "invalid public key")?;
+    if pk.to_peer_id().to_string() != proof.peer_id {
+        return Err("public key does not match peer_id");
+    }
+    let sig = hex::decode(proof.signature_hex.trim()).map_err(|_| "invalid signature_hex")?;
+    let action = if register { "register" } else { "unregister" };
+    let msg = canonical_message(action, &proof.peer_id, proof.ts_ms);
+    if !pk.verify(msg.as_bytes(), &sig) {
         return Err("bad signature");
     }
-    Ok(peer_id)
+    Ok(proof.peer_id.clone())
 }
 
 /// Register or unregister this peer for relay rendezvous (opt-in visibility).
-pub fn set_relay_rendezvous_registration(
-    keypair: &libp2p::identity::Keypair,
-    register: bool,
-    host: Option<&str>,
-) {
-    let host = relay_host(host);
+pub fn set_relay_rendezvous_registration(keypair: &Keypair, register: bool, host: Option<&str>) {
+    let origin = relay_origin(host);
     let path = if register {
         "rendezvous/register"
     } else {
         "rendezvous/unregister"
     };
-    let url = format!("https://{host}/{path}");
-    let body = match sign_registration(keypair, register) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::debug!("rendezvous sign failed: {e}");
-            return;
-        }
+    let url = format!("{origin}/{path}");
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let Ok(body) = sign_rendezvous_proof(keypair, register, ts_ms) else {
+        tracing::debug!("rendezvous proof sign failed");
+        return;
     };
     let result = ureq::post(&url)
         .timeout(std::time::Duration::from_secs(8))
@@ -116,10 +104,10 @@ pub fn set_relay_rendezvous_registration(
     }
 }
 
-/// Returns peer IDs opted in and currently reserved on the public relay.
+/// Returns peer IDs opted in and currently connected to the public relay.
 pub fn fetch_relay_rendezvous(host: Option<&str>) -> Vec<String> {
-    let host = relay_host(host);
-    let url = format!("https://{host}/rendezvous");
+    let origin = relay_origin(host);
+    let url = format!("{origin}/rendezvous");
     let resp = match ureq::get(&url)
         .timeout(std::time::Duration::from_secs(8))
         .call()
@@ -141,26 +129,43 @@ pub fn fetch_relay_rendezvous(host: Option<&str>) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sign_and_verify_roundtrip() {
-        let kp = libp2p::identity::Keypair::generate_ed25519();
-        let body = sign_registration(&kp, true).unwrap();
-        let now = crate::data::now_ms();
-        let peer = verify_registration(&body, true, now).unwrap();
-        assert_eq!(peer, kp.public().to_peer_id());
-        assert!(verify_registration(&body, false, now).is_err());
+    fn signed_proof_roundtrip() {
+        let kp = Keypair::generate_ed25519();
+        let now = 1_700_000_000_000;
+        let proof = sign_rendezvous_proof(&kp, true, now).unwrap();
+        let peer = verify_rendezvous_proof(&proof, true, now).unwrap();
+        assert_eq!(peer, kp.public().to_peer_id().to_string());
     }
 
     #[test]
-    fn rejects_wrong_key() {
-        let kp = libp2p::identity::Keypair::generate_ed25519();
-        let other = libp2p::identity::Keypair::generate_ed25519();
-        let mut body = sign_registration(&kp, true).unwrap();
-        body.peer_id = other.public().to_peer_id().to_string();
-        let now = crate::data::now_ms();
-        assert!(verify_registration(&body, true, now).is_err());
+    fn unsigned_legacy_body_fails() {
+        let proof = RendezvousProof {
+            peer_id: "12D3KooWfake".into(),
+            public_key_hex: String::new(),
+            ts_ms: 1,
+            signature_hex: String::new(),
+        };
+        assert!(verify_rendezvous_proof(&proof, true, 1).is_err());
+    }
+
+    #[test]
+    fn wrong_action_fails() {
+        let kp = Keypair::generate_ed25519();
+        let now = 1_700_000_000_000;
+        let proof = sign_rendezvous_proof(&kp, true, now).unwrap();
+        assert!(verify_rendezvous_proof(&proof, false, now).is_err());
+    }
+
+    #[test]
+    fn stale_timestamp_fails() {
+        let kp = Keypair::generate_ed25519();
+        let now = 1_700_000_000_000;
+        let proof = sign_rendezvous_proof(&kp, true, now).unwrap();
+        assert!(verify_rendezvous_proof(&proof, true, now + MAX_SKEW_MS + 1).is_err());
     }
 }

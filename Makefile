@@ -1,50 +1,29 @@
-SHELL := /bin/zsh
+SHELL := /bin/bash
 
-.PHONY: help test test-fast test-unit test-sim check clippy ci fmt docker-android-ci docker-compose-android gradle-wrapper
+.PHONY: help run test clippy fmt ci
 
 help:
 	@echo "mycena-relay — the Mycena project bootstrap relay"
 	@echo ""
-	@echo "  cargo run -p mycena-relay   Local relay (see README)"
-	@echo "  make test                     Run tests"
+	@echo "  make run      Local relay (see README)"
+	@echo "  make test     Test the relay crates"
+	@echo "  make ci       Same checks as GitHub CI"
 	@echo ""
 	@echo "Production: ./scripts/deploy-relay-fly.sh · docs/ECOSYSTEM.md"
 
-.PHONY: test test-fast test-unit test-sim check clippy ci fmt docker-android-ci docker-compose-android gradle-wrapper
+RELAY_CRATES := -p mycena-relay -p mycena-core -p mycena-node
 
-# One-shot: add Gradle wrapper under android/ using Docker (no local Gradle needed).
-gradle-wrapper:
-	docker run --rm -v "$(CURDIR):/workspace" -w /workspace/android gradle:8.7-jdk17 \
-		gradle wrapper --gradle-version=8.7 --distribution-type=bin
-
-# Full Rust NDK + UniFFI + assembleDebug inside Docker (needs Docker + network).
-docker-android-ci:
-	docker build -f docker/android-ci/Dockerfile -t mycena-android-ci "$(CURDIR)"
-
-# Same as docker-android-ci via Compose (profile "android").
-docker-compose-android:
-	docker compose --profile android build android-ci
-
-check:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo check --workspace
-
-test-unit:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test --workspace --lib
-
-test-sim:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test -p mycena-sim
+run:
+	cargo run -p mycena-relay
 
 test:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test --workspace
-
-test-fast:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test --workspace --lib
+	cargo test $(RELAY_CRATES)
 
 clippy:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo clippy --workspace --all-targets -- -D warnings
-
-ci: check test-fast clippy
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo fmt --all --check
+	cargo clippy $(RELAY_CRATES) --all-targets -- -D warnings
 
 fmt:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo fmt --all
+	cargo fmt --all
+
+ci: test clippy
+	cargo fmt --all -- --check

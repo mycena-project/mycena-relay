@@ -1,14 +1,14 @@
 [workspace]
 members = [
-  "crates/mycelium-core",
-  "crates/mycelium-node",
-  "crates/mycelium-app",
-  "crates/mycelium-coin",
-  "crates/mycelium-ffi",
-  "crates/mycelium-cli",
-  "crates/mycelium-desktop",
-  "crates/mycelium-sim",
-  "crates/mycelium-relay",
+  "crates/mycena-core",
+  "crates/mycena-node",
+  "crates/mycena-app",
+  "crates/mycena-coin",
+  "crates/mycena-ffi",
+  "crates/mycena-cli",
+  "crates/mycena-desktop",
+  "crates/mycena-sim",
+  "crates/mycena-relay",
   "crates/miniapp-sdk",
 ]
 resolver = "2"
@@ -17,7 +17,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-authors = ["Mycelium Project"]
+authors = ["Mycena Project"]
 
 [workspace.dependencies]
 anyhow = "1"

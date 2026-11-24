@@ -3,7 +3,7 @@ name = "miniapp-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI tools for Mycelium mini-app bundles (lint, hash)"
+description = "CLI tools for Mycena mini-app bundles (lint, hash)"
 
 [[bin]]
 name = "miniapp-sdk"
@@ -14,7 +14,7 @@ anyhow.workspace = true
 blake3.workspace = true
 clap.workspace = true
 libp2p = { workspace = true, features = ["ed25519"] }
-mycelium-app = { path = "../mycelium-app" }
+mycena-app = { path = "../mycena-app" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tempfile = "3"

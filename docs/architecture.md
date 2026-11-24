@@ -1,11 +1,11 @@
-# Mycelium Architecture (MVP-Oriented)
+# Mycena Architecture (MVP-Oriented)
 
 ## Workspace Layout
 
-- `crates/mycelium-core`: shared data model, identity vault, rendezvous auth types. Depends on libp2p identity/PeerId types, not a swarm runtime.
-- `crates/mycelium-node`: libp2p-backed node engine (discovery, direct messaging, persistence).
-- `crates/mycelium-relay`: public circuit-relay binary (TCP/QUIC, Kad server, signed HTTP rendezvous).
-- `crates/mycelium-cli`: operator-facing test CLI for local mesh experiments.
+- `crates/mycena-core`: shared data model, identity vault, rendezvous auth types. Depends on libp2p identity/PeerId types, not a swarm runtime.
+- `crates/mycena-node`: libp2p-backed node engine (discovery, direct messaging, persistence).
+- `crates/mycena-relay`: public circuit-relay binary (TCP/QUIC, Kad server, signed HTTP rendezvous).
+- `crates/mycena-cli`: operator-facing test CLI for local mesh experiments.
 - `docs/research-notes.md`: design inputs from Briar, Serval, BATMAN, Freifunk, IPFS, DTN.
 
 ## Module Boundaries

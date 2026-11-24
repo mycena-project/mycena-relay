@@ -3,9 +3,9 @@ SHELL := /bin/zsh
 .PHONY: help test test-fast test-unit test-sim check clippy ci fmt docker-android-ci docker-compose-android gradle-wrapper
 
 help:
-	@echo "mycelium-relay — the maintainer bootstrap relay"
+	@echo "mycena-relay — the Mycena project bootstrap relay"
 	@echo ""
-	@echo "  cargo run -p mycelium-relay   Local relay (see README)"
+	@echo "  cargo run -p mycena-relay   Local relay (see README)"
 	@echo "  make test                     Run tests"
 	@echo ""
 	@echo "Production: ./scripts/deploy-relay-fly.sh · docs/ECOSYSTEM.md"
@@ -19,7 +19,7 @@ gradle-wrapper:
 
 # Full Rust NDK + UniFFI + assembleDebug inside Docker (needs Docker + network).
 docker-android-ci:
-	docker build -f docker/android-ci/Dockerfile -t mycelium-android-ci "$(CURDIR)"
+	docker build -f docker/android-ci/Dockerfile -t mycena-android-ci "$(CURDIR)"
 
 # Same as docker-android-ci via Compose (profile "android").
 docker-compose-android:
@@ -32,7 +32,7 @@ test-unit:
 	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test --workspace --lib
 
 test-sim:
-	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test -p mycelium-sim
+	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test -p mycena-sim
 
 test:
 	CARGO_HOME="$(CURDIR)/.cargo-home" cargo test --workspace

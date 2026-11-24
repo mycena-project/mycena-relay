@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Mycena Project
+namespace mycena {
+  [Throws=MycenaException]
+  void init_node(NodeConfig config);
+  void stop_node();
+  string local_peer_id();
+  /// Ephemeral relay identity (distinct from `local_peer_id()`).
+  string relay_peer_id();
+  /// Seconds since the current relay keypair was created.
+  u64 relay_keypair_age_secs();
+  sequence<string> known_peers();
+  NodeMetrics metrics();
+
+  [Throws=MycenaException]
+  void send_chat_direct(string to_peer, string body);
+  [Throws=MycenaException]
+  void send_chat_broadcast(string body);
+  string local_enc_pubkey();
+  [Throws=MycenaException]
+  void send_chat_encrypted(string to_peer, string body);
+  boolean has_enc_key_for(string peer_id);
+  sequence<ChatMessage> chat_history(string peer_id, u32 limit);
+
+  sequence<ContactInfo> list_contacts();
+  sequence<ContactInfo> list_accepted_contacts();
+  sequence<ContactInfo> list_pending_contacts();
+  [Throws=MycenaException]
+  ContactInfo add_contact(string peer_id, string display_name, boolean accepted);
+  [Throws=MycenaException]
+  ContactInfo accept_contact(string peer_id);
+  void reject_contact(string peer_id);
+  void remove_contact(string peer_id);
+
+  sequence<GroupInfo> list_groups();
+  [Throws=MycenaException]
+  GroupInfo create_group(string name);
+  GroupInfo? import_group_invite(string json);
+  string export_group_invite(string group_id);
+  void send_group_message(string group_id, string body);
+  void delete_group(string group_id);
+  sequence<ChatMessage> group_chat_history(string group_id, u32 limit);
+
+  void post_bulletin(string scope, string title, string body, u64 ttl_secs);
+  sequence<BulletinPost> bulletins_for_scope(string scope);
+  sequence<string> get_bulletin_subscriptions();
+  void subscribe_bulletin_scope(string scope);
+  void unsubscribe_bulletin_scope(string scope);
+  boolean is_bulletin_enabled();
+
+  sequence<ScopeKeyInfo> list_scope_keys();
+  [Throws=MycenaException]
+  void add_scope_key(string invite_json);
+  void create_scope_key(string scope, string display_name);
+  [Throws=MycenaException]
+  string export_scope_key(string scope);
+  void delete_scope_key(string scope);
+  boolean scope_is_encrypted(string scope);
+
+  [Throws=MycenaException]
+  void start_proximity(PresenceProfileData profile, u32 ttl_secs);
+  void stop_proximity();
+  sequence<NearbyProfile> nearby_profiles();
+  boolean is_proximity_active();
+  [Throws=MycenaException]
+  boolean express_proximity_interest(string enc_pubkey_hex);
+  sequence<ProximityMessageData> proximity_messages(u64 since_ms);
+  [Throws=MycenaException]
+  void send_proximity_message(string enc_pubkey_hex, string message);
+
+  void send_mail(string to_peer, string subject, string body);
+  sequence<MailMessage> mail_inbox(u32 limit);
+  sequence<MailMessage> mail_sent(u32 limit);
+  void mark_mail_read(string mail_id);
+
+  void set_display_name(string name);
+  string display_name();
+  void set_energy_state(EnergyState state);
+  void set_rendezvous_enabled(boolean enabled);
+  void add_bootstrap_peer(string multiaddr);
+  void set_event_callback(NodeEventCallback callback);
+
+  string wallet_address();
+  WalletBalance wallet_balance();
+  void send_transaction(string to_address, u64 amount_muon, string? memo);
+  sequence<TxInfo> wallet_recent_transactions(u32 limit);
+  void request_faucet();
+
+  sequence<MiniAppInfo> list_installed_apps();
+  [Throws=MycenaException]
+  MiniAppInstallPreview preview_miniapp_install(bytes bundle_data);
+  [Throws=MycenaException]
+  MiniAppInfo install_app(bytes bundle_data, string? listing_app_id, boolean allow_sideload, boolean allow_downgrade);
+  [Throws=MycenaException]
+  MiniAppInfo install_official_bundle(string app_id);
+  [Throws=MycenaException]
+  void uninstall_app(string app_id);
+  bytes? get_app_file(string app_id, string path);
+  sequence<AppStoreListing> browse_app_store();
+  string? miniapp_storage_get(string app_id, string key);
+  [Throws=MycenaException]
+  void miniapp_storage_set(string app_id, string key, string value);
+  [Throws=MycenaException]
+  void miniapp_storage_delete(string app_id, string key);
+  string miniapp_bridge_call(string app_id, string method, string args_json);
+  string miniapp_issue_bridge_session(string app_id);
+  void miniapp_revoke_bridge_session(string app_id);
+  [Throws=MycenaException]
+  string miniapp_issue_capability(string app_id, string permission, string session_token);
+  [Throws=MycenaException]
+  void miniapp_publish_revocation(string app_id, string reason);
+  [Throws=MycenaException]
+  MiniAppPolicyData miniapp_get_policy(string app_id);
+  [Throws=MycenaException]
+  void miniapp_set_safe_mode(string app_id, boolean enabled);
+  [Throws=MycenaException]
+  void miniapp_report_app(string app_id);
+
+  ConnectivityMode current_connectivity_mode();
+
+  HotWalletConfig get_hot_wallet_config();
+  void set_hot_wallet_config(HotWalletConfig config);
+  void set_cold_wallet_address(string? address);
+  HotWalletStatus hot_wallet_status();
+
+  string build_payment_request_uri(string to_address, u64 amount_muon, string? memo);
+  PaymentRequestData? parse_payment_request_uri(string uri);
+};
+
+dictionary WalletBalance {
+  u64 confirmed_muon;
+  u64 pending_muon;
+};
+
+dictionary TxInfo {
+  string id;
+  string from_address;
+  string to_address;
+  u64 amount_muon;
+  u64 fee_muon;
+  u64 timestamp_ms;
+  string? memo;
+  u32 witness_count;
+  boolean confirmed;
+};
+
+dictionary NodeConfig {
+  string db_path;
+  string listen_addr;
+  string display_name;
+  sequence<string> bootstrap_peers;
+  /// Optional 64-char hex (32 bytes) master key for at-rest encryption (Android).
+  string? storage_key_hex;
+  /// Opt-in relay rendezvous (find/be found on public relay).
+  boolean rendezvous_enabled;
+  /// Bulletin scopes subscribed at startup (opt-in).
+  sequence<string> bulletin_subscriptions;
+};
+
+dictionary NodeMetrics {
+  u64 messages_forwarded;
+  u64 messages_dropped_ttl;
+  u64 messages_dropped_queue;
+  u64 messages_delivered_local;
+  u64 pending_queue_size;
+  u64 seen_cache_size;
+  u64 connected_peers;
+  u64 max_peers;
+  u64 peer_cap_rejections;
+};
+
+dictionary HotWalletConfig {
+  u64 max_cache_muon;
+  u64 refill_threshold_muon;
+  u64 refill_amount_muon;
+  string? cold_wallet_address;
+};
+
+dictionary HotWalletStatus {
+  u64 confirmed_muon;
+  u64 pending_muon;
+  u64 max_cache_muon;
+  boolean auto_refill_enabled;
+  boolean needs_refill;
+  ConnectivityMode connectivity;
+};
+
+dictionary PaymentRequestData {
+  string to_address;
+  u64 amount_muon;
+  string? memo;
+  u64? expires_at_ms;
+};
+
+dictionary ChatMessage {
+  string id;
+  string from_peer;
+  string from_display_name;
+  string body;
+  u64 timestamp_ms;
+};
+
+dictionary BulletinPost {
+  string id;
+  string from_display_name;
+  string title;
+  string body;
+  string scope;
+  u64 timestamp_ms;
+  u64 expires_at_ms;
+};
+
+dictionary MailMessage {
+  string id;
+  string from_peer;
+  string from_display_name;
+  string to_peer;
+  string subject;
+  string body;
+  u64 timestamp_ms;
+  boolean is_read;
+};
+
+dictionary GroupInfo {
+  string id;
+  string name;
+  u32 member_count;
+  u64 created_at_ms;
+};
+
+enum ContactStatus {
+  "Pending",
+  "Accepted",
+};
+
+dictionary ContactInfo {
+  string peer_id;
+  string display_name;
+  u64 added_at_ms;
+  ContactStatus status;
+};
+
+dictionary MiniAppInfo {
+  string id;
+  string name;
+  string description;
+  string version;
+  string developer;
+  string entry;
+  boolean accepts_payments;
+  string? payment_address;
+  sequence<string> permissions;
+};
+
+dictionary MiniAppInstallPreview {
+  MiniAppInfo manifest;
+  string bundle_hash;
+  string trust_level;
+  boolean listing_signature_ok;
+  string? installed_version;
+  boolean is_downgrade;
+  boolean has_inline_script;
+  boolean strict_csp_eligible;
+  boolean bundle_signature_ok;
+  boolean reproducible_attested;
+};
+
+dictionary AppStoreListing {
+  MiniAppInfo manifest;
+  string bundle_hash;
+  u64 updated_at_ms;
+  boolean signature_valid;
+};
+
+dictionary MiniAppPolicyData {
+  string app_id;
+  u8 reputation_score;
+  boolean safe_mode_active;
+  boolean safe_mode_forced;
+  boolean safe_mode_suggested;
+  boolean user_safe_mode;
+  boolean revoked;
+  boolean strict_csp_eligible;
+};
+
+dictionary PresenceProfileData {
+  string? display_name;
+  string? bio;
+  u8? age;
+  string? gender;
+  string? looking_for;
+  sequence<string> interests;
+  string? photo_base64;
+};
+
+dictionary NearbyProfile {
+  string ephemeral_id;
+  string enc_pubkey_hex;
+  string? display_name;
+  string? bio;
+  u8? age;
+  string? gender;
+  string? looking_for;
+  sequence<string> interests;
+  string? photo_base64;
+  u64 seen_at_ms;
+  boolean has_expired;
+  boolean interest_sent;
+  boolean interest_received;
+  boolean is_mutual;
+};
+
+dictionary ProximityMessageData {
+  string from_enc_pubkey_hex;
+  string body;
+  u64 received_at_ms;
+};
+
+dictionary ScopeKeyInfo {
+  string scope;
+  string display_name;
+  u64 added_at_ms;
+};
+
+enum EnergyState {
+  "Active",
+  "Intermittent",
+  "Passive",
+};
+
+enum ConnectivityMode {
+  "Internet",
+  "MeshOnly",
+};
+
+callback interface NodeEventCallback {
+  void on_peer_discovered(string peer_id);
+  void on_peer_lost(string peer_id);
+  void on_chat_received(ChatMessage message);
+  void on_mail_received(MailMessage message);
+  void on_bulletin_received(BulletinPost post);
+  void on_app_store_listing(AppStoreListing listing);
+  void on_connectivity_changed(ConnectivityMode mode);
+  void on_contact_request(string peer_id, string display_name);
+};
+
+[Error]
+interface MycenaException {
+  InstallError(string detail);
+  ChatError(string detail);
+  NodeError(string detail);
+};

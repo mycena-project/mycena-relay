@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycelium Project
-//! Mycelium mini-app developer CLI (lint, pack, sign, hash).
+// Copyright (C) 2026 Mycena Project
+//! Mycena mini-app developer CLI (lint, pack, sign, hash).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use libp2p::identity::Keypair;
-use mycelium_app::miniapp::bundle_signature::{self, BundleSignatureFile, BUNDLE_SIG_FILE};
-use mycelium_app::miniapp::manifest::MiniAppManifest;
-use mycelium_app::miniapp::reproducible_build::{content_attestation_hash, digest_file_hex};
-use mycelium_app::miniapp::store::{AppSource, AppStoreListing};
-use mycelium_app::miniapp::{scan_bundle, MiniAppBundle, ReproducibleBuild};
+use mycena_app::miniapp::bundle_signature::{self, BundleSignatureFile, BUNDLE_SIG_FILE};
+use mycena_app::miniapp::manifest::MiniAppManifest;
+use mycena_app::miniapp::reproducible_build::{content_attestation_hash, digest_file_hex};
+use mycena_app::miniapp::store::{AppSource, AppStoreListing};
+use mycena_app::miniapp::{scan_bundle, MiniAppBundle, ReproducibleBuild};
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
 #[derive(Parser)]
 #[command(
     name = "miniapp-sdk",
-    about = "Lint, pack, and sign Mycelium .mxa bundles"
+    about = "Lint, pack, and sign Mycena .mxa bundles"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -34,12 +34,12 @@ enum Command {
     Hash { path: PathBuf },
     /// Build a .mxa zip from a mini-app source directory.
     Pack {
-        /// Directory containing mycelium-app.json and assets.
+        /// Directory containing mycena-app.json and assets.
         dir: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Add mycelium-bundle.sig.json (and optional developer_peer_id) to a bundle.
+    /// Add mycena-bundle.sig.json (and optional developer_peer_id) to a bundle.
     Sign {
         path: PathBuf,
         /// Ed25519 identity file (libp2p protobuf secret, same as node identity).
@@ -77,7 +77,7 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Emit reproducible-build fields for `mycelium-app.json` (H23).
+    /// Emit reproducible-build fields for `mycena-app.json` (H23).
     Attest {
         path: PathBuf,
         #[arg(long)]
@@ -173,9 +173,9 @@ fn lint_bundle(path: &Path) -> anyhow::Result<()> {
 }
 
 fn pack_dir(dir: &Path, output: &Path) -> anyhow::Result<()> {
-    let manifest_path = dir.join("mycelium-app.json");
+    let manifest_path = dir.join("mycena-app.json");
     if !manifest_path.is_file() {
-        anyhow::bail!("missing mycelium-app.json in {}", dir.display());
+        anyhow::bail!("missing mycena-app.json in {}", dir.display());
     }
     let manifest: MiniAppManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path)?).context("parse manifest")?;
@@ -307,7 +307,7 @@ fn sign_bundle(path: &Path, identity: &Path, output: Option<&PathBuf>) -> anyhow
 
     let mut archive = ZipArchive::new(std::io::Cursor::new(&bytes))?;
     let mut manifest: MiniAppManifest = {
-        let mut f = archive.by_name("mycelium-app.json")?;
+        let mut f = archive.by_name("mycena-app.json")?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
         serde_json::from_slice(&buf)?
@@ -328,7 +328,7 @@ fn sign_bundle(path: &Path, identity: &Path, output: Option<&PathBuf>) -> anyhow
             }
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
-            if name == "mycelium-app.json" {
+            if name == "mycena-app.json" {
                 buf = serde_json::to_vec_pretty(&manifest)?;
             }
             writer.start_file(name, opts)?;
@@ -388,7 +388,7 @@ fn attest_bundle(path: &Path, recipe: &Path) -> anyhow::Result<()> {
     };
     attestation.validate()?;
     println!("{}", serde_json::to_string_pretty(&attestation)?);
-    println!("# Merge the JSON above into mycelium-app.json under \"reproducible_build\"");
+    println!("# Merge the JSON above into mycena-app.json under \"reproducible_build\"");
     println!("# content attestation hash: {content_hash}");
     println!("# archive hash (changes when manifest is updated): {archive_hash}");
     Ok(())

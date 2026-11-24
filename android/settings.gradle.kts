@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycelium Project
+// Copyright (C) 2026 Mycena Project
 pluginManagement {
     repositories {
         google()
@@ -16,6 +16,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "mycelium-android"
+rootProject.name = "mycena-android"
 include(":app")
 include(":uniffi-bindings")

@@ -1,4 +1,4 @@
-# Mycelium MVP Smoke Test
+# Mycena MVP Smoke Test
 
 This document gives a copy/paste validation flow for:
 - two local nodes
@@ -29,13 +29,13 @@ Open two terminals.
 ### Terminal A
 
 ```bash
-cargo run -p mycelium-cli -- --db /tmp/node-a --name Alice --api-port 7760
+cargo run -p mycena-cli -- --db /tmp/node-a --name Alice --api-port 7760
 ```
 
 ### Terminal B
 
 ```bash
-cargo run -p mycelium-cli -- --db /tmp/node-b --name Bob --api-port 7761
+cargo run -p mycena-cli -- --db /tmp/node-b --name Bob --api-port 7761
 ```
 
 Both terminals print a line like:
@@ -61,7 +61,7 @@ You should see the other peer eventually.
 Send a mail from A to B:
 
 ```text
-/mail <PEER_ID_OF_B> Hallo | Das ist eine Test-Mail ueber Mycelium.
+/mail <PEER_ID_OF_B> Hallo | Das ist eine Test-Mail ueber Mycena.
 ```
 
 Check B inbox via REST:

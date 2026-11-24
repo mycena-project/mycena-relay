@@ -49,7 +49,7 @@ Compatibility details (SD-030):
 
 - old stored messages deserialize cleanly due to `serde(default)`
 - inbound `WireMessage::Data` without a valid author signature is dropped
-- unsigned gossip relay bodies are limited to the tagged payloads `[mycelium:group]` and `[appstore]`
+- unsigned gossip relay bodies are limited to the tagged payloads `[mycena:group]` and `[appstore]`
 - there is no grace period for unsigned user data (`UNSIGNED_GRACE_PERIOD_UNTIL_MS = 0`)
 
 ## 4) Anti-Entropy (Bloom)
@@ -123,6 +123,6 @@ Added endpoints:
 ## 10) Verification Commands
 
 ```bash
-cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
-cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
+cargo test -p mycena-relay -p mycena-core -p mycena-node
+cargo clippy -p mycena-relay -p mycena-core -p mycena-node --all-targets -- -D warnings
 ```

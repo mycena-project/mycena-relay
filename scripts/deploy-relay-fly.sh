@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the Mycelium libp2p relay to Fly.io (remote Docker build).
+# Deploy the Mycena libp2p relay to Fly.io (remote Docker build).
 #
 # Prereq: fly auth login (local) or FLY_API_TOKEN (CI). Optional: FLY_ORG for
 # `fly apps create` when you have multiple orgs (e.g. FLY_ORG=personal).
@@ -62,7 +62,14 @@ if ! volume_exists; then
 fi
 
 # Repo root = Docker build context; image is Dockerfile.relay (matches CI).
-exec "$FLY_BIN" deploy --remote-only \
+"$FLY_BIN" deploy --remote-only \
   --config deploy/relay/fly.toml \
   --dockerfile Dockerfile.relay \
+  --ha=false \
   "$@"
+
+# Keep the footprint at exactly one machine (cost guard, see scripts/fly-budget-guard.sh).
+"$FLY_BIN" scale count 1 -a "$FLY_APP" -y
+if command -v jq >/dev/null 2>&1; then
+  bash "$ROOT/scripts/fly-budget-guard.sh"
+fi

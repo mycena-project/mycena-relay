@@ -1,14 +1,14 @@
-app = "mycelium-relay"
+app = "mycena-relay"
 primary_region = "fra"
 
 # Docker image: root Dockerfile.relay (see scripts/deploy-relay-fly.sh / CI).
 [env]
-RUST_LOG = "info,mycelium_relay=debug"
+RUST_LOG = "info,mycena_relay=debug"
 # Stable libp2p identity on /data (no OS keyring on Fly). Set once:
-#   fly secrets set MYCELIUM_STORAGE_KEY="$(openssl rand -hex 32)" -a mycelium-relay
+#   fly secrets set MYCENA_STORAGE_KEY="$(openssl rand -hex 32)" -a mycena-relay
 #
 # libp2p TCP/4001 requires a dedicated IPv4 (shared ingress breaks raw TCP/noise):
-#   fly ips allocate-v4 --yes -a mycelium-relay
+#   fly ips allocate-v4 --yes -a mycena-relay
 # Bootstrap clients should dial the dedicated /ip4/… address (see bootstrap.rs).
 
 # HTTP Health-Check (Port 8080 intern → 80/443 extern via Fly-Proxy)
@@ -49,7 +49,7 @@ port = 4001
 
 # Persistentes Volume für Keypair (Peer-ID bleibt stabil über Restarts)
 [mounts]
-source = "mycelium_relay_data"
+source = "mycena_relay_data"
 destination = "/data"
 
 [vm]

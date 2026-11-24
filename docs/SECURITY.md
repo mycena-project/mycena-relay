@@ -1,4 +1,4 @@
-# Mycelium Security Model
+# Mycena Security Model
 
 ## Transport security
 

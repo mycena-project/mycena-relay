@@ -5,7 +5,7 @@
 #
 # The release APK/AAB is inside the image under /src/android/app/build/outputs/...
 # Copy out the debug APK, for example:
-#   id=$(docker create mycelium-android-ci:local) && docker cp "$id":/src/android/app/build/outputs/apk/debug/app-debug.apk . && docker rm -v "$id"
+#   id=$(docker create mycena-android-ci:local) && docker cp "$id":/src/android/app/build/outputs/apk/debug/app-debug.apk . && docker rm -v "$id"
 
 services:
   android-ci:
@@ -13,4 +13,4 @@ services:
     build:
       context: .
       dockerfile: docker/android-ci/Dockerfile
-    image: mycelium-android-ci:local
+    image: mycena-android-ci:local

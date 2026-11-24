@@ -1,4 +1,4 @@
-# Mycelium relay — canonical image for Fly.io and local `docker build`.
+# Mycena relay — canonical image for Fly.io and local `docker build`.
 # Build context must be the repository root (Cargo workspace).
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
@@ -11,12 +11,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Gesamter Workspace wird gebraucht (relay hängt von mycelium-core + mycelium-node ab)
+# Gesamter Workspace wird gebraucht (relay hängt von mycena-core + mycena-node ab)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
 # Nur das Relay-Binary bauen
-RUN cargo build --release -p mycelium-relay
+RUN cargo build --release -p mycena-relay
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -26,21 +26,21 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -r -u 1001 -s /bin/false mycelium
-RUN mkdir -p /data && chown mycelium:mycelium /data
+RUN useradd -r -u 1001 -s /bin/false mycena
+RUN mkdir -p /data && chown mycena:mycena /data
 
-COPY --from=builder /app/target/release/mycelium-relay /usr/local/bin/mycelium-relay
-RUN chmod +x /usr/local/bin/mycelium-relay
+COPY --from=builder /app/target/release/mycena-relay /usr/local/bin/mycena-relay
+RUN chmod +x /usr/local/bin/mycena-relay
 
-USER mycelium
+USER mycena
 
 EXPOSE 4001/tcp
 EXPOSE 4001/udp
 EXPOSE 8080/tcp
 
-ENV RUST_LOG=info,mycelium_relay=debug
+ENV RUST_LOG=info,mycena_relay=debug
 
-CMD ["/usr/local/bin/mycelium-relay", \
+CMD ["/usr/local/bin/mycena-relay", \
      "--listen", "/ip4/0.0.0.0/tcp/4001", \
      "--listen-quic", "/ip4/0.0.0.0/udp/4001/quic-v1", \
      "--keypair-path", "/data/identity", \

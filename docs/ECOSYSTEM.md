@@ -1,20 +1,26 @@
-# the maintainer Mycelium family
+# Mycena project family
 
-**You are here:** [mycelium-relay](https://github.com/mycena-project/mycelium-relay) — public libp2p bootstrap relay. Install target is the VPS (`relay.example.invalid`); the tagged Fly.io workflow is still in the repo.
+**You are here:** [mycena-relay](https://github.com/mycena-project/mycena-relay) — public libp2p bootstrap relay, deployed as one small Fly.io machine (`mycena-relay.fly.dev`).
 
-See [Mycelium docs/ECOSYSTEM.md](https://github.com/mycena-project/Mycelium/blob/main/docs/ECOSYSTEM.md) for the full family map.
+| Repository | Role |
+|---|---|
+| [Mycena](https://github.com/mycena-project/Mycena) | App: Rust mesh core, Android, desktop, mini-apps |
+| [mycena-relay](https://github.com/mycena-project/mycena-relay) | Optional bootstrap relay (this repo) |
+| [mycena-web](https://github.com/mycena-project/mycena-web) | Project website (Vercel) |
+
+See [Mycena docs/ECOSYSTEM.md](https://github.com/mycena-project/Mycena/blob/main/docs/ECOSYSTEM.md) for the full map.
 
 ## Local run
 
 ```bash
-cargo run -p mycelium-relay
+cargo run -p mycena-relay
 curl -s http://localhost:8080/health
 ```
 
 ## Production deploy
 
 ```bash
-bash scripts/deploy-relay-vps.sh
+bash scripts/deploy-relay-fly.sh
 ```
 
-VPS is a single container with host networking, separate from the demo Compose project. Local run remains `cargo run`. Tag pushes still run `scripts/deploy-relay-fly.sh` until that workflow is removed.
+The script deploys to Fly.io, pins the app to one machine and runs the cost guard.

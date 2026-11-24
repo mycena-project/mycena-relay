@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Mycelium Project
+// Copyright (C) 2026 Mycena Project
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "network.mycelium.app"
+    namespace = "io.github.mycena_project.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "network.mycelium.app"
+        applicationId = "io.github.mycena_project.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

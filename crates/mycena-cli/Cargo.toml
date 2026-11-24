@@ -1,0 +1,27 @@
+[package]
+name = "mycena-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+mycena-core = { path = "../mycena-core" }
+mycena-app = { path = "../mycena-app" }
+mycena-node = { path = "../mycena-node" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[features]
+raspberry-pi = ["dep:rppal", "dep:ssd1306", "dep:embedded-hal", "dep:linux-embedded-hal"]
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+rppal = { version = "0.18", optional = true }
+ssd1306 = { version = "0.8", optional = true }
+embedded-hal = { version = "0.2", optional = true }
+linux-embedded-hal = { version = "0.3", optional = true }

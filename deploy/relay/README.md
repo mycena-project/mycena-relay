@@ -1,6 +1,6 @@
-# Mycelium Relay — Fly.io deployment
+# Mycena Relay — Fly.io deployment
 
-The VPS is the install target (`deploy/vps/`). This file is the existing Fly.io path. A version tag still runs it.
+This is the deployment path for the project relay on Fly.io. A version tag runs it from CI; `scripts/deploy-relay-fly.sh` runs it by hand.
 
 Single image definition: **`Dockerfile.relay`** at the **repository root** (workspace build context).
 Fly app config: **`deploy/relay/fly.toml`** (no `[build]` block — deploy script and CI pass `--dockerfile Dockerfile.relay`).
@@ -17,9 +17,9 @@ fly auth login
 The deploy script creates the app and volume if missing. For a fully manual one-time setup (names must match `fly.toml` `app` and `[mounts] source`):
 
 ```bash
-fly apps create mycelium-relay --org personal   # or your org; match fly.toml `app`
-fly volumes create mycelium_relay_data \
-  --app mycelium-relay \
+fly apps create mycena-relay --org personal   # or your org; match fly.toml `app`
+fly volumes create mycena_relay_data \
+  --app mycena-relay \
   --region fra \
   --size 1
 ```
@@ -28,7 +28,7 @@ fly volumes create mycelium_relay_data \
 
 Create a deploy token and add **`FLY_API_TOKEN`** under **Settings → Secrets and variables → Actions**.
 
-The workflow **`.github/workflows/deploy.yml`** runs on tag **`v*.*.*`** (and manual dispatch). It checks that **`MYCELIUM_STORAGE_KEY`** is set on the Fly app before deploy.
+The workflow **`.github/workflows/deploy.yml`** runs on tag **`v*.*.*`** (and manual dispatch). It checks that **`MYCENA_STORAGE_KEY`** is set on the Fly app before deploy.
 
 ### 3. Manual deploy (same as CI)
 
@@ -47,8 +47,8 @@ bash scripts/deploy-relay-fly.sh --strategy immediate
 ### 4. Local Docker build (smoke)
 
 ```bash
-docker build -f Dockerfile.relay -t mycelium-relay:local .
-docker run --rm -p 4001:4001/tcp -p 4001:4001/udp -p 8080:8080 mycelium-relay:local
+docker build -f Dockerfile.relay -t mycena-relay:local .
+docker run --rm -p 4001:4001/tcp -p 4001:4001/udp -p 8080:8080 mycena-relay:local
 curl -s http://localhost:8080/health
 ```
 
@@ -57,31 +57,31 @@ curl -s http://localhost:8080/health
 Fly has no OS keyring; without a fixed storage key the libp2p peer id changes on every deploy and clients lose bootstrap.
 
 ```bash
-fly secrets set MYCELIUM_STORAGE_KEY="$(openssl rand -hex 32)" -a mycelium-relay
+fly secrets set MYCENA_STORAGE_KEY="$(openssl rand -hex 32)" -a mycena-relay
 ```
 
-Identity is persisted on the mounted volume at `/data/.mycelium-relay/identity`.
+Identity is persisted on the mounted volume at `/data/.mycena-relay/identity`.
 
 ### 6. Dedicated IPv4 for libp2p TCP/UDP
 
 Shared Fly ingress breaks raw libp2p Noise on port 4001. Allocate once:
 
 ```bash
-fly ips allocate-v4 --yes -a mycelium-relay
+fly ips allocate-v4 --yes -a mycena-relay
 ```
 
-After deploy, update `crates/mycelium-core/src/bootstrap.rs` (`RELAY_IPV4`, `RELAY_PEER_ID`, `BOOTSTRAP_PEERS`) from:
+After deploy, update `crates/mycena-core/src/bootstrap.rs` (`RELAY_IPV4`, `RELAY_PEER_ID`, `BOOTSTRAP_PEERS`) from:
 
 ```bash
-curl -s https://mycelium-relay.fly.dev/
+curl -s https://mycena-relay.fly.dev/
 ```
 
-Clients must dial the dedicated `/ip4/…` address, not `/dns4/mycelium-relay.fly.dev/…`.
+Clients must dial the dedicated `/ip4/…` address, not `/dns4/mycena-relay.fly.dev/…`.
 
 ### 7. Logs and peer id
 
 ```bash
-fly logs --app mycelium-relay | grep -i peer
+fly logs --app mycena-relay | grep -i peer
 ```
 
 ## Notes

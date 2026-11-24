@@ -1,6 +1,6 @@
-# Mycelium Store Listing Draft
+# Mycena Store Listing Draft
 
-**Mycelium - Offline Mesh Network**
+**Mycena - Offline Mesh Network**
 
 Chat, Bulletin Board and Mail that works without internet.
 Messages travel between devices directly, surviving network outages, censorship, and remote areas.

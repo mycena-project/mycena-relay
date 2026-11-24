@@ -1,0 +1,28 @@
+name: Fly budget guard
+
+# Weekly check that the relay stays inside its ~4-5 USD/month footprint.
+# Fly.io has no hard spending cap, so this job fails loudly (GitHub e-mails
+# the repository owner) and scales extra machines back down to one.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Check footprint
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::warning::FLY_API_TOKEN not set; skipping."
+            exit 0
+          fi
+          bash scripts/fly-budget-guard.sh --enforce

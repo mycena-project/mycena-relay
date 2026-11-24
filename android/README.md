@@ -1,6 +1,6 @@
 # Android Build & Test Guide
 
-This guide explains how to build and test the Android app with embedded Rust (`mycelium-ffi`) and UniFFI bindings.
+This guide explains how to build and test the Android app with embedded Rust (`mycena-ffi`) and UniFFI bindings.
 
 ## Prerequisites
 
@@ -26,8 +26,8 @@ From workspace root:
 This does:
 
 1. Adds Android Rust targets
-2. Builds `mycelium-ffi` `.so` libraries with `cargo ndk`
-3. Generates Kotlin bindings from `crates/mycelium-ffi/src/mycelium.udl`
+2. Builds `mycena-ffi` `.so` libraries with `cargo ndk`
+3. Generates Kotlin bindings from `crates/mycena-ffi/src/mycena.udl`
 4. Runs Android Gradle build (`./android/gradlew assembleDebug`)
 
 ## 1b) Full build inside Docker (no local Android SDK / NDK)
@@ -53,8 +53,8 @@ Configure the repository secrets listed in the header of that workflow, then run
 Generate Kotlin bindings only:
 
 ```bash
-cargo run -p mycelium-ffi --bin uniffi-bindgen -- generate \
-  crates/mycelium-ffi/src/mycelium.udl \
+cargo run -p mycena-ffi --bin uniffi-bindgen -- generate \
+  crates/mycena-ffi/src/mycena.udl \
   --language kotlin \
   --out-dir android/uniffi-bindings/src/main/kotlin/
 ```
@@ -66,7 +66,7 @@ cargo ndk \
   -t aarch64-linux-android \
   -t x86_64-linux-android \
   -o android/rust-build \
-  build --release -p mycelium-ffi
+  build --release -p mycena-ffi
 ```
 
 Build debug APK only:
@@ -118,7 +118,7 @@ cd android
 ## Troubleshooting
 
 - **`gradlew` missing**: generate wrapper in Android Studio or run `gradle wrapper` in `android/`.
-- **No `.so` loaded**: ensure `android/rust-build` contains target ABI folders and `libmycelium_ffi.so`.
+- **No `.so` loaded**: ensure `android/rust-build` contains target ABI folders and `libmycena_ffi.so`.
 - **Binding mismatch**: re-run UniFFI generation after UDL changes.
 - **Camera/QR issues**: ensure camera permission granted on device.
 - **Peer discovery on hotspot**: use QR/manual bootstrap multiaddr flow (`addBootstrapPeer`).

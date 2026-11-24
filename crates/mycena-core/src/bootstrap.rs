@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Mycena Project
+//! Öffentliche Bootstrap-Peers für das Mycena-Netzwerk.
+//!
+//! Nach einem Relay-Redeployment:
+//! 1. `curl -s https://mycena-relay.fly.dev/` → `peer_id`
+//! 2. [`RELAY_PEER_ID`] und [`BOOTSTRAP_PEERS`] aktualisieren (TCP via dedicated `/ip4/…`)
+//! 3. Commit + Build → Clients dialen den Relay korrekt
+
+/// Fly.io dedicated IPv4 (raw libp2p TCP/UDP; shared ingress breaks Noise handshake).
+pub const RELAY_IPV4: &str = "149.248.194.198";
+
+pub const RELAY_PEER_ID: &str = "12D3KooWSkVL5ThExB7paWskDKc2pUobKrV9yWVabMpUdw8hE2wj";
+
+/// libp2p identify protocol version advertised by the public relay and mesh nodes.
+pub const IDENTIFY_PROTOCOL: &str = "/mycena/1.0.0";
+
+/// Public relay / bootstrap infra — not a user device in Connect UI.
+pub fn is_relay_peer(peer_id: &str) -> bool {
+    peer_id.trim() == RELAY_PEER_ID
+}
+
+pub const BOOTSTRAP_PEERS: &[&str] = &[
+    "/ip4/149.248.194.198/tcp/4001/p2p/12D3KooWSkVL5ThExB7paWskDKc2pUobKrV9yWVabMpUdw8hE2wj",
+    "/ip4/149.248.194.198/udp/4001/quic-v1/p2p/12D3KooWSkVL5ThExB7paWskDKc2pUobKrV9yWVabMpUdw8hE2wj",
+    // Second regional relay (after deploy, e.g. fly regions add ams):
+    // "/ip4/<ams-ip>/tcp/4001/p2p/12D3KooW...",
+];
+
+/// Extract the `/p2p/<PeerId>` component from a libp2p multiaddr.
+pub fn peer_id_from_multiaddr(addr: &str) -> Option<String> {
+    let parsed: libp2p::Multiaddr = addr.parse().ok()?;
+    peer_id_from_parsed_multiaddr(&parsed).map(|p| p.to_string())
+}
+
+pub fn peer_id_from_parsed_multiaddr(addr: &libp2p::Multiaddr) -> Option<libp2p::PeerId> {
+    use libp2p::multiaddr::Protocol;
+    addr.iter().find_map(|proto| {
+        if let Protocol::P2p(peer_id) = proto {
+            Some(peer_id)
+        } else {
+            None
+        }
+    })
+}
+
+/// libp2p circuit address to reach `remote_peer_id` via the public relay (NAT traversal).
+pub fn relay_circuit_multiaddr(remote_peer_id: &str) -> Option<String> {
+    let remote = remote_peer_id.trim();
+    if remote.is_empty() {
+        return None;
+    }
+    let base = BOOTSTRAP_PEERS.iter().find(|addr| addr.contains("/tcp/"))?;
+    Some(format!("{base}/p2p-circuit/p2p/{remote}"))
+}
+
+/// Shareable dial info: compact invite first (QR), then relay circuit, then listen addrs.
+pub fn shareable_dial_multiaddrs(local_peer_id: &str, listen_addrs: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    out.push(crate::invite::encode_invite(local_peer_id));
+    if let Some(circuit) = relay_circuit_multiaddr(local_peer_id) {
+        out.push(circuit);
+    }
+    for addr in listen_addrs {
+        let trimmed = addr.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains("/p2p/") {
+            out.push(trimmed.to_string());
+        } else {
+            out.push(format!("{trimmed}/p2p/{local_peer_id}"));
+        }
+    }
+    out
+}
+
+/// Lädt Bootstrap-Peers mit folgender Priorität:
+/// 1. Umgebungsvariable `MYCENA_BOOTSTRAP_PEERS` (kommasepariert)
+/// 2. Datei `<db_path>/bootstrap.txt` (eine Adresse pro Zeile, # = Kommentar)
+/// 3. Eingebettete Konstanten aus [`BOOTSTRAP_PEERS`]
+pub fn load_bootstrap_peers(db_path: &str) -> Vec<String> {
+    if let Ok(env_peers) = std::env::var("MYCENA_BOOTSTRAP_PEERS") {
+        let peers: Vec<String> = env_peers
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        if !peers.is_empty() {
+            tracing::info!(
+                "bootstrap: using {} peer(s) from MYCENA_BOOTSTRAP_PEERS",
+                peers.len()
+            );
+            return peers;
+        }
+    }
+
+    let path = std::path::Path::new(db_path).join("bootstrap.txt");
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let peers: Vec<String> = content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+                .collect();
+            if !peers.is_empty() {
+                tracing::info!(
+                    "bootstrap: using {} peer(s) from {}",
+                    peers.len(),
+                    path.display()
+                );
+                return peers;
+            }
+        }
+    }
+
+    tracing::info!(
+        "bootstrap: using {} built-in peer(s)",
+        BOOTSTRAP_PEERS.len()
+    );
+    BOOTSTRAP_PEERS.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// Reads custom bootstrap peers from `<db_path>/bootstrap.txt` only (no env / built-in fallback).
+pub fn load_custom_bootstrap_peers(db_path: &str) -> Vec<String> {
+    let path = std::path::Path::new(db_path).join("bootstrap.txt");
+    if !path.exists() {
+        return Vec::new();
+    }
+    std::fs::read_to_string(&path)
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Peers / multiaddrs the user added via QR or Connect (retried until connected).
+const DIAL_PEERS_FILE: &str = "dial_peers.txt";
+
+/// Load persisted dial targets (one multiaddr per line).
+pub fn load_persisted_dial_peers(db_path: &str) -> Vec<String> {
+    let path = std::path::Path::new(db_path).join(DIAL_PEERS_FILE);
+    if !path.exists() {
+        return Vec::new();
+    }
+    std::fs::read_to_string(&path)
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append a dial target if not already stored (QR scan, Connect tab, etc.).
+pub fn persist_dial_peer(db_path: &str, multiaddr: &str) -> std::io::Result<()> {
+    let trimmed = multiaddr.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let mut peers = load_persisted_dial_peers(db_path);
+    if peers.iter().any(|p| p == trimmed) {
+        return Ok(());
+    }
+    peers.push(trimmed.to_string());
+    std::fs::create_dir_all(db_path)?;
+    let path = std::path::Path::new(db_path).join(DIAL_PEERS_FILE);
+    std::fs::write(path, peers.join("\n"))
+}
+
+/// Persists custom bootstrap peers to `<db_path>/bootstrap.txt`.
+pub fn save_custom_bootstrap_peers(db_path: &str, peers: &[String]) -> std::io::Result<()> {
+    std::fs::create_dir_all(db_path)?;
+    let path = std::path::Path::new(db_path).join("bootstrap.txt");
+    if peers.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    std::fs::write(path, peers.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_id_from_multiaddr_extracts_embedded_id() {
+        let addr = BOOTSTRAP_PEERS[0];
+        let peer_id = peer_id_from_multiaddr(addr).expect("peer id");
+        assert_eq!(peer_id, RELAY_PEER_ID);
+    }
+
+    #[test]
+    fn relay_circuit_addr_uses_embedded_relay() {
+        let addr =
+            relay_circuit_multiaddr("12D3KooWExamplePeerIdForTestOnly").expect("circuit addr");
+        assert!(addr.contains(RELAY_IPV4));
+        assert!(addr.contains("/p2p-circuit/p2p/12D3KooWExamplePeerIdForTestOnly"));
+        assert!(addr.contains(RELAY_PEER_ID));
+    }
+}

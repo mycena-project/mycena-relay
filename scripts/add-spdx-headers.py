@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 HEADER_LINES = [
     "// SPDX-License-Identifier: AGPL-3.0-or-later",
-    "// Copyright (C) 2026 Mycelium Project",
+    "// Copyright (C) 2026 Mycena Project",
     "",
 ]
 
@@ -19,7 +19,7 @@ EXTENSIONS = {".rs", ".kt", ".kts", ".js", ".svelte", ".udl"}
 SKIP_PARTS = (
     "/gen/schemas/",
     "package-lock.json",
-    "/uniffi/mycelium/mycelium.kt",
+    "/uniffi/mycena/mycena.kt",
     "/node_modules/",
 )
 

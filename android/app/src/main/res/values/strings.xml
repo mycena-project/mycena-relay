@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- App -->
-    <string name="app_name">Mycelium</string>
+    <string name="app_name">Mycena</string>
     <string name="app_tagline">Offline mesh network</string>
 
     <!-- Navigation -->
@@ -108,7 +108,7 @@
     <string name="wallet_set_cold_wallet">Set cold wallet</string>
 
     <!-- Service notification -->
-    <string name="notification_channel_name">Mycelium Network</string>
+    <string name="notification_channel_name">Mycena Network</string>
     <string name="notification_running">Mesh network active</string>
     <string name="notification_peers">%1$d peers connected</string>
 

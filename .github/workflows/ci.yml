@@ -1,4 +1,4 @@
-name: Mycelium CI
+name: Mycena CI
 
 on:
   push:
@@ -29,12 +29,12 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: mycelium-relay-${{ matrix.os }}
+          shared-key: mycena-relay-${{ matrix.os }}
       - name: Build relay crates
-        run: cargo build -p mycelium-relay -p mycelium-core -p mycelium-node
+        run: cargo build -p mycena-relay -p mycena-core -p mycena-node
       - name: Test relay crates
-        run: cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
+        run: cargo test -p mycena-relay -p mycena-core -p mycena-node
       - name: Clippy
-        run: cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
+        run: cargo clippy -p mycena-relay -p mycena-core -p mycena-node --all-targets -- -D warnings
       - name: Rustfmt
         run: cargo fmt --all -- --check

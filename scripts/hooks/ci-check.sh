@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mirror primary CI cargo gates for mycelium-relay.
+# Mirror primary CI cargo gates for mycena-relay.
 set -euo pipefail
 # macOS 27: ld-1267 cannot read arm64e.x1 in the CLT SDK. See macos-sdk.sh.
 # shellcheck disable=SC1091
@@ -12,9 +12,9 @@ echo "ci-check: cargo fmt --check"
 cargo fmt --all -- --check
 
 echo "ci-check: cargo clippy"
-cargo clippy -p mycelium-relay -p mycelium-core -p mycelium-node --all-targets -- -D warnings
+cargo clippy -p mycena-relay -p mycena-core -p mycena-node --all-targets -- -D warnings
 
 echo "ci-check: tests"
-cargo test -p mycelium-relay -p mycelium-core -p mycelium-node
+cargo test -p mycena-relay -p mycena-core -p mycena-node
 
 echo "ci-check: OK"

@@ -20,7 +20,7 @@ jobs:
       - name: Setup Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
 
-      - name: Verify MYCELIUM_STORAGE_KEY (stable peer ID)
+      - name: Verify MYCENA_STORAGE_KEY (stable peer ID)
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
@@ -29,10 +29,10 @@ jobs:
             exit 0
           fi
           FLY_APP="$(grep -m1 '^app = ' deploy/relay/fly.toml | sed 's/^app = "\(.*\)".*/\1/')"
-          if ! fly secrets list -a "$FLY_APP" 2>/dev/null | grep -q 'MYCELIUM_STORAGE_KEY'; then
-            echo "::error::MYCELIUM_STORAGE_KEY is not set on Fly app \"$FLY_APP\"."
+          if ! fly secrets list -a "$FLY_APP" 2>/dev/null | grep -q 'MYCENA_STORAGE_KEY'; then
+            echo "::error::MYCENA_STORAGE_KEY is not set on Fly app \"$FLY_APP\"."
             echo "Without it the libp2p peer ID changes on redeploy (bootstrap clients break)."
-            echo "One-time: fly secrets set MYCELIUM_STORAGE_KEY=\"\$(openssl rand -hex 32)\" -a $FLY_APP"
+            echo "One-time: fly secrets set MYCENA_STORAGE_KEY=\"\$(openssl rand -hex 32)\" -a $FLY_APP"
             echo "See deploy/relay/README.md §5"
             exit 1
           fi

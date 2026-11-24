@@ -3839,7 +3839,7 @@ dependencies = [
  "blake3",
  "clap",
  "libp2p",
- "mycelium-app",
+ "mycena-app",
  "serde",
  "serde_json",
  "tempfile",
@@ -3976,7 +3976,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-app"
+name = "mycena-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3991,9 +3991,9 @@ dependencies = [
  "hkdf",
  "hmac",
  "libp2p",
- "mycelium-coin",
- "mycelium-core",
- "mycelium-node",
+ "mycena-coin",
+ "mycena-core",
+ "mycena-node",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -4009,16 +4009,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-cli"
+name = "mycena-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "embedded-hal",
  "linux-embedded-hal",
- "mycelium-app",
- "mycelium-core",
- "mycelium-node",
+ "mycena-app",
+ "mycena-core",
+ "mycena-node",
  "rppal",
  "serde_json",
  "ssd1306",
@@ -4029,7 +4029,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-coin"
+name = "mycena-coin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4038,8 +4038,8 @@ dependencies = [
  "blake3",
  "bs58",
  "libp2p",
- "mycelium-core",
- "mycelium-node",
+ "mycena-core",
+ "mycena-node",
  "serde",
  "sled",
  "tempfile",
@@ -4050,7 +4050,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-core"
+name = "mycena-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4074,7 +4074,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-desktop"
+name = "mycena-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4082,10 +4082,10 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "dirs 5.0.1",
- "mycelium-app",
- "mycelium-coin",
- "mycelium-core",
- "mycelium-node",
+ "mycena-app",
+ "mycena-coin",
+ "mycena-core",
+ "mycena-node",
  "serde",
  "serde_json",
  "tauri",
@@ -4099,15 +4099,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-ffi"
+name = "mycena-ffi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "mycelium-app",
- "mycelium-coin",
- "mycelium-core",
- "mycelium-node",
+ "mycena-app",
+ "mycena-coin",
+ "mycena-core",
+ "mycena-node",
  "once_cell",
  "serde_json",
  "tokio",
@@ -4119,7 +4119,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-node"
+name = "mycena-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4129,7 +4129,7 @@ dependencies = [
  "futures",
  "hex",
  "libp2p",
- "mycelium-core",
+ "mycena-core",
  "serde",
  "serde_json",
  "sled",
@@ -4139,14 +4139,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-relay"
+name = "mycena-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "libp2p",
- "mycelium-core",
+ "mycena-core",
  "serde",
  "serde_json",
  "tokio",
@@ -4155,14 +4155,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "mycelium-sim"
+name = "mycena-sim"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "libp2p",
- "mycelium-core",
- "mycelium-node",
+ "mycena-core",
+ "mycena-node",
  "tempfile",
  "tokio",
 ]

@@ -1,8 +1,8 @@
 /target/
 /node_modules/
-/crates/mycelium-desktop/ui/node_modules/
+/crates/mycena-desktop/ui/node_modules/
 /.cargo-home/
-/.mycelium-relay/
+/.mycena-relay/
 /android/.gradle/
 /android/**/build/
 /android/keystore.jks
@@ -18,6 +18,6 @@
 *.pfx
 *.jks
 secrets/
-deploy/vps/relay.env
+deploy/fly/relay.env
 credentials.json
 service-account*.json

@@ -1,0 +1,15 @@
+Mycena
+Copyright (C) 2026 Alexander Senf ("Alex") and Mycena contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your option)
+any later version. See LICENSE.
+
+Contributions are accepted under the Contributor License Agreement in CLA.md,
+which lets the maintainer also offer the code under other licenses (for
+example to organisations that cannot meet the AGPL obligations). The AGPL
+version always remains available.
+
+Third-party components keep their own licenses; see Cargo.toml, the
+third-party/ directory and the generated SBOM.

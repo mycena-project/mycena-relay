@@ -43,7 +43,18 @@ impl Group {
     }
 
     pub fn from_invite(json: &str) -> anyhow::Result<Self> {
+        // Invites arrive from other people (QR, links, mesh), so bound the input
+        // before parsing and validate every field that is kept.
+        const MAX_INVITE_BYTES: usize = 4096;
+        const MAX_ID_CHARS: usize = 128;
+        const MAX_NAME_CHARS: usize = 256;
+        if json.len() > MAX_INVITE_BYTES {
+            anyhow::bail!("group invite too large");
+        }
         let v: serde_json::Value = serde_json::from_str(json)?;
+        if !v.is_object() {
+            anyhow::bail!("group invite must be a JSON object");
+        }
         let key_hex = v["key"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing key"))?;
@@ -52,9 +63,17 @@ impl Group {
             .as_slice()
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid key length"))?;
+        let id = v["id"].as_str().unwrap_or("");
+        let name = v["name"].as_str().unwrap_or("Group");
+        if id.is_empty() || id.chars().count() > MAX_ID_CHARS {
+            anyhow::bail!("invalid group id");
+        }
+        if name.chars().count() > MAX_NAME_CHARS {
+            anyhow::bail!("group name too long");
+        }
         Ok(Self {
-            id: v["id"].as_str().unwrap_or("").to_string(),
-            name: v["name"].as_str().unwrap_or("Group").to_string(),
+            id: id.to_string(),
+            name: name.to_string(),
             key,
             members: Vec::new(),
             created_at_ms: now_ms(),
@@ -106,6 +125,19 @@ impl Group {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #[test]
+    fn invite_roundtrip_and_bounds() {
+        let g = super::Group::new("Nachbarschaft".into());
+        let back = super::Group::from_invite(&g.export_invite()).unwrap();
+        assert_eq!(back.id, g.id);
+        assert_eq!(back.key, g.key);
+
+        assert!(super::Group::from_invite(&"x".repeat(5000)).is_err());
+        assert!(super::Group::from_invite("[]").is_err());
+        let no_id = serde_json::json!({"name": "G", "key": hex::encode([7u8; 32])}).to_string();
+        assert!(super::Group::from_invite(&no_id).is_err());
+    }
+
     use super::*;
 
     #[test]

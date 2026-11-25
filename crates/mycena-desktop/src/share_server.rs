@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 pub const SHARE_PORT: u16 = 8765;
 const MAX_TRANSFERS: u32 = 32;
 
-const IOS_BETA_URL: &str = "https://mycena-beta.vercel.app/";
+const IOS_BETA_URL: &str = "https://github.com/mycena-project/Mycena#readme";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,8 +302,8 @@ a {{ display: inline-block; margin-top: 1rem; padding: 0.85rem 1.25rem;
 </style></head><body>
 <h1>Mycena for iPhone</h1>
 <p class="note">The native iOS app is not available for offline install yet (Apple does not allow APK-style sharing).</p>
-<p class="note">When you have internet again, check the beta page for TestFlight or App Store updates.</p>
-<a href="{IOS_BETA_URL}">Open Mycena beta page</a>
+<p class="note">When you have internet again, check the project page for iOS updates.</p>
+<a href="{IOS_BETA_URL}">Open the Mycena project page</a>
 <p class="note">Save this link or scan the iOS QR from desktop when online.</p>
 <p><a href="./">← Back</a></p>
 </body></html>"#

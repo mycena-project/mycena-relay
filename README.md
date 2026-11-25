@@ -11,7 +11,6 @@
 
 - Live endpoint: `mycena-relay.fly.dev` (Frankfurt region)
 - Main app repository: [mycena-project/Mycena](https://github.com/mycena-project/Mycena)
-- Beta website: [mycena-beta.vercel.app](https://mycena-beta.vercel.app)
 
 ## What this repo contains
 

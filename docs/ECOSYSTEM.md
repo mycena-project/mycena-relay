@@ -6,7 +6,6 @@
 |---|---|
 | [Mycena](https://github.com/mycena-project/Mycena) | App: Rust mesh core, Android, desktop, mini-apps |
 | [mycena-relay](https://github.com/mycena-project/mycena-relay) | Optional bootstrap relay (this repo) |
-| [mycena-web](https://github.com/mycena-project/mycena-web) | Project website (Vercel) |
 
 See [Mycena docs/ECOSYSTEM.md](https://github.com/mycena-project/Mycena/blob/main/docs/ECOSYSTEM.md) for the full map.
 

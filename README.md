@@ -67,7 +67,7 @@ Mycena App ──► relay circuit (/p2p-circuit) ──► Mycena App
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: **github.com/mycena-project/Mycena/security/advisories/new** — [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: [private vulnerability reporting](https://github.com/mycena-project/Mycena/security/advisories/new) — [SECURITY.md](SECURITY.md).
 
 ## License
 

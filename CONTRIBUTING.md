@@ -8,7 +8,7 @@ Early public beta — coordinate with the main [Mycena](https://github.com/mycen
 |------|---------|
 | **Bug** | GitHub Issue with repro steps |
 | **Feature** | GitHub Issue with use case |
-| **Security** | **github.com/mycena-project/Mycena/security/advisories/new** only — see [SECURITY.md](SECURITY.md) |
+| **Security** | [private vulnerability reporting](https://github.com/mycena-project/Mycena/security/advisories/new) only — see [SECURITY.md](SECURITY.md) |
 
 ## Development
 

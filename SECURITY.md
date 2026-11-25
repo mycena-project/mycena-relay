@@ -4,7 +4,7 @@
 
 **Do not** open public GitHub issues for security vulnerabilities.
 
-Report them privately to **github.com/mycena-project/Mycena/security/advisories/new** with:
+Report them privately through [GitHub private vulnerability reporting](https://github.com/mycena-project/Mycena/security/advisories/new) with:
 
 - affected component (relay binary, deploy config, rendezvous API) and version or commit hash
 - clear reproduction steps or proof-of-concept
@@ -12,10 +12,7 @@ Report them privately to **github.com/mycena-project/Mycena/security/advisories/
 
 We aim to acknowledge receipt within **72 hours** and coordinate responsible disclosure.
 
-Preferred channels:
-
-1. Email: **github.com/mycena-project/Mycena/security/advisories/new**
-2. GitHub Security Advisories on this repository
+Reports for the relay go to the main repository, so app and relay issues are handled in one place.
 
 ## Scope
 

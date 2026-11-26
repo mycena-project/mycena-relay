@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/mycena-banner.png" alt="Mycena — the everyday messenger that keeps working when the network doesn't" width="100%">
+</p>
+
 # Mycena Relay
 
 > **Early Beta — expect bugs.** This public repository builds and deploys the bootstrap relay used by [Mycena](https://github.com/mycena-project/Mycena) clients. It is not a second copy of the Mycena app.

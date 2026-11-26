@@ -71,7 +71,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: [private vulnerability 
 
 ## License
 
-Copyright (C) 2026 Mycena Project.
+Copyright (C) 2026 the Mycena authors, see [NOTICE](NOTICE).
 
 Licensed under [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
 
